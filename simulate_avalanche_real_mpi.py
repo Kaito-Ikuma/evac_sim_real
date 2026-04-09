@@ -1,0 +1,278 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+from sqlalchemy import create_engine
+from scipy.ndimage import distance_transform_edt
+from scipy.signal import convolve2d
+import skfmm
+from mpi4py import MPI
+import os 
+
+comm = MPI.COMM_WORLD
+rank = comm.Get_rank()
+size = comm.Get_size()
+
+
+
+# ==========================================
+# 1. ベースマップの書き出し（DBからの抽出）
+# ==========================================
+print("▼ 1. データベースからポテンシャル場 V(x,y) を抽出しています...")
+engine = create_engine('postgresql://postgres:mysecretpassword@localhost:5432/evacuation')
+
+# PostGISから、マス目の中心座標と危険度(V)を抽出するSQL
+sql = """
+SELECT 
+    mesh_id, 
+    ST_X(ST_Centroid(geometry)) as lon, 
+    ST_Y(ST_Centroid(geometry)) as lat, 
+    potential_v,
+    is_obstacle
+FROM simulation_base_map
+ORDER BY lat, lon;
+"""
+df = pd.read_sql(sql, con=engine)
+
+# CSVとして書き出す（To Doリストの「CSV/メッシュデータの書き出し」完了）
+df.to_csv("base_map_potential_real.csv", index=False)
+print("   -> 'base_map_potential_real.csv' として保存しました。")
+
+# ==========================================
+# 2. シミュレーション空間（2Dグリッド）の構築
+# ==========================================
+# 経度・緯度を単純な2次元の行列インデックス(x, y)に変換
+lon_unique = np.sort(df['lon'].unique())
+lat_unique = np.sort(df['lat'].unique())
+GRID_W = len(lon_unique)
+GRID_H = len(lat_unique)
+
+# 自分の担当する Y座標 の範囲を計算
+chunk_size = GRID_H // size
+my_y_min = rank * chunk_size
+# 最後のランクは余りも含めて最後まで担当する
+my_y_max = (rank + 1) * chunk_size - 1 if rank != size - 1 else GRID_H - 1
+
+# V_field などは巨大ではないので、全員が全体マップを持っておき、
+# 自分の担当エリア（my_y_min <= y <= my_y_max）にいるエージェントだけを計算対象とする
+
+# ポテンシャル場 V の2次元配列を作成（危険=1, 安全=0）
+V_field = np.zeros((GRID_H, GRID_W))
+for _, row in df.iterrows():
+    x_idx = np.where(lon_unique == row['lon'])[0][0]
+    y_idx = np.where(lat_unique == row['lat'])[0][0]
+    V_field[y_idx, x_idx] = row['potential_v']
+
+print("▼ 1.5 障害物を定義し、FMMでポテンシャル勾配を計算しています...")
+
+# 1. DBのデータから現実の障害物（川・建物等）のマスクを作成
+obstacles = np.zeros((GRID_H, GRID_W), dtype=bool)
+for _, row in df.iterrows():
+    x_idx = np.where(lon_unique == row['lon'])[0][0]
+    y_idx = np.where(lat_unique == row['lat'])[0][0]
+    obstacles[y_idx, x_idx] = row['is_obstacle']
+
+print(f"   -> 障害物マップを構築しました（総数: {obstacles.sum()}マス）")
+
+# 2. FMM用の初期場を作成（安全圏=0、それ以外=1）
+phi = np.ones((GRID_H, GRID_W))
+phi[V_field == 0] = 0  # 既に安全圏と判定されているマスは0
+
+# 3. 障害物を「マスク処理」してFMMに渡す
+phi_masked = np.ma.MaskedArray(phi, mask=obstacles)
+
+# 4. FMMを実行し、障害物を迂回した安全圏までの最短距離を計算
+distance_field = skfmm.distance(phi_masked).data
+
+# 5. 障害物のマスの距離（ポテンシャル V）を「無限大(∞)」に設定
+distance_field[obstacles] = np.inf
+
+# 6. ポテンシャルを正規化せず、そのままの距離（セル数）を使用する
+# これにより、1マス安全な方向へ進むと必ず ΔV = -1.0 となる
+V_field = distance_field
+
+# ==========================================
+# 3. マルチエージェントの設定
+# ==========================================
+N_AGENTS = 1000
+
+KERNEL_SIZE = 7  # 7x7マス（約700m四方）の範囲まで影響を考慮
+k_center = KERNEL_SIZE // 2
+mu_kernel = np.zeros((KERNEL_SIZE, KERNEL_SIZE))
+
+# 距離に反比例（1/r）する影響力フィルターを作成
+for i in range(KERNEL_SIZE):
+    for j in range(KERNEL_SIZE):
+        dist = np.sqrt((i - k_center)**2 + (j - k_center)**2)
+        if dist == 0:
+            mu_kernel[i, j] = 1.0  # 同じマスは影響力最大
+        else:
+            mu_kernel[i, j] = 1.0 / dist  # 離れるほど影響力が弱まる
+
+
+
+
+# 危険エリア（V>0）かつ 障害物ではない（V<無限大）座標リストを取得
+danger_y, danger_x = np.where((V_field > 0) & (V_field < np.inf))
+
+# エージェントの初期配置（危険エリアからランダムに選ぶ）
+np.random.seed(42)
+initial_indices = np.random.choice(len(danger_x), N_AGENTS)
+agents_x = danger_x[initial_indices].astype(float)
+agents_y = danger_y[initial_indices].astype(float)
+
+
+
+# 物理パラメータ（全体共通）
+# 平常時は地形の傾斜を感じない（アルファ=0）とし、純粋に外場 h_ext だけで駆動させます
+alpha = 0.0      
+T = 0.01         # ゆらぎを極小化し、確率的な「漏れ」を完全に防ぐ（T=0.1から変更）
+h_ext = 0.0      # 初期状態
+C_max = 20.0     # マスの最大収容人数
+
+# ==========================================
+# エージェントごとの個体差（ガウス分布）の生成
+# ==========================================
+# 同調圧力(mu)を高く、正常性バイアス(phi)も高く設定します
+mu_mean, mu_std = 2.0, 0.1
+phi_mean, phi_std = 1.0, 0.05
+
+mu_array = np.random.normal(loc=mu_mean, scale=mu_std, size=N_AGENTS)
+phi_bar_array = np.random.normal(loc=phi_mean, scale=phi_std, size=N_AGENTS)
+
+# 物理的な異常挙動を防ぐためのクリッピング処理
+mu_array = np.clip(mu_array, 0.0, None)
+phi_bar_array = np.clip(phi_bar_array, 0.0, None)
+
+# ※物理的な異常挙動を防ぐためのクリッピング処理
+# 同調圧力がマイナス（人が多いほど逃げたくなる天邪鬼）や、
+# 正常性バイアスがマイナス（理由もなく常に動き回りたがる）になるのを防ぐため、最低値を0にします。
+mu_array = np.clip(mu_array, 0.0, None)
+phi_bar_array = np.clip(phi_bar_array, 0.0, None)
+
+my_agents = []
+
+# N_AGENTS人全員をチェックし、自分の担当エリア(my_y_min 〜 my_y_max)にいる人だけを確保
+for i in range(N_AGENTS):
+    if my_y_min <= agents_y[i] <= my_y_max:
+        agent_dict = {
+            'x': agents_x[i],
+            'y': agents_y[i],
+            'mu': mu_array[i],
+            'phi': phi_bar_array[i]
+        }
+        my_agents.append(agent_dict)
+
+# ==========================================
+# 4. メインシミュレーションループ（MPI・保存のみ）
+# ==========================================
+RELAXATION_STEPS = 500
+NUM_FRAMES = 150  # 外場 h_ext を変化させる回数
+
+# 結果保存用のディレクトリを作成（Rank 0 のみ実行）
+output_dir = "simulation_results"
+if rank == 0:
+    os.makedirs(output_dir, exist_ok=True)
+    print("=== MPI並列計算を開始します ===")
+
+# 外場 h_ext を段階的に上げながら計算を進める
+for frame in range(NUM_FRAMES):
+    current_h_ext = frame * 0.015
+    
+    # ▼【内部で時間を進める（準静的過程）】
+    for step in range(RELAXATION_STEPS):
+        
+        # --- [フェーズ0] 生の人口密度の計算と連続メモリ化 ---
+        my_agents_y = [a['y'] for a in my_agents]
+        my_agents_x = [a['x'] for a in my_agents]
+        density, _, _ = np.histogram2d(my_agents_y, my_agents_x, bins=[range(GRID_H+1), range(GRID_W+1)])
+        density = np.ascontiguousarray(density)
+
+        # --- [フェーズ1] のり代（Halo）の交換 ---
+        if rank > 0:
+            comm.Sendrecv(density[my_y_min, :], dest=rank-1, recvbuf=density[my_y_min-1, :], source=rank-1)
+        if rank < size - 1:
+            comm.Sendrecv(density[my_y_max, :], dest=rank+1, recvbuf=density[my_y_max+1, :], source=rank+1)
+
+        # --- [フェーズ2] 平均場 m(t) の超高速集計 (Allreduce) ---
+        my_safe_count = 0
+        for agent in my_agents:
+            if V_field[int(agent['y']), int(agent['x'])] == 0:
+                my_safe_count += 1
+                
+        total_safe_count = comm.allreduce(my_safe_count, op=MPI.SUM)
+        m_ratio = total_safe_count / N_AGENTS
+
+        # --- [フェーズ3] エージェントの移動計算（平均場モデル） ---
+        for agent in my_agents:
+            cx, cy = int(agent['x']), int(agent['y'])
+            
+            # 安全圏にいたら動かない
+            if V_field[cy, cx] == 0:
+                continue
+                
+            moves = [(0,1), (0,-1), (1,0), (-1,0)]
+            dx, dy = moves[np.random.randint(len(moves))]
+            nx, ny = cx + dx, cy + dy
+            
+            if nx < 0 or nx >= GRID_W or ny < 0 or ny >= GRID_H:
+                continue
+                
+            # リスク認知の傾斜（外場 + 平均場の同調圧力）
+            current_slope = alpha + current_h_ext + agent['mu'] * m_ratio
+            
+            E_curr = current_slope * V_field[cy, cx]
+            E_next = current_slope * V_field[ny, nx]
+            
+            # エネルギー差分 ＋ 個体差（正常性バイアス）
+            delta_E = (E_next - E_curr) + agent['phi']
+            
+            P_move_base = 1.0 / (1.0 + np.exp(delta_E / T))
+            capacity_penalty = max(0.0, 1.0 - (density[ny, nx] / C_max))
+            P_move_final = P_move_base * capacity_penalty
+            
+            if np.random.rand() < P_move_final:
+                density[cy, cx] -= 1
+                density[ny, nx] += 1
+                agent['x'] = nx
+                agent['y'] = ny
+                
+        # --- [フェーズ4] エージェントのマイグレーション（境界越え） ---
+        agents_to_send_up = []
+        agents_to_send_down = []
+        agents_to_keep = []
+
+        for agent in my_agents:
+            if agent['y'] < my_y_min:
+                agents_to_send_up.append(agent)
+            elif agent['y'] > my_y_max:
+                agents_to_send_down.append(agent)
+            else:
+                agents_to_keep.append(agent)
+
+        my_agents = agents_to_keep
+
+        if rank > 0:
+            incoming_from_up = comm.sendrecv(agents_to_send_up, dest=rank-1, source=rank-1)
+            my_agents.extend(incoming_from_up)
+
+        if rank < size - 1:
+            incoming_from_down = comm.sendrecv(agents_to_send_down, dest=rank+1, source=rank+1)
+            my_agents.extend(incoming_from_down)
+
+    # ==========================================
+    # 5. 緩和完了後の結果保存フェーズ (MPI Reduce)
+    # ==========================================
+    density_contig = np.ascontiguousarray(density)
+    global_density = np.zeros_like(density_contig)
+    
+    # 全コアのdensityを足し合わせてマップ全体を復元
+    comm.Reduce(density_contig, global_density, op=MPI.SUM, root=0)
+    
+    if rank == 0:
+        filename = os.path.join(output_dir, f"density_frame_{frame:03d}.npy")
+        np.save(filename, global_density)
+        print(f"[Frame {frame:02d}/{NUM_FRAMES-1}] 緩和完了 (h_ext={current_h_ext:.2f}) -> 保存: {filename}")
+
+if rank == 0:
+    print("=== 全計算プロセスが完了しました ===")
