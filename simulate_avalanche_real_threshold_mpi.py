@@ -337,13 +337,13 @@ for frame in range(NUM_FRAMES):
         # --- [フェーズ4] マクロ統計量 m_dec と m_evac の算出 ---
         # 意思決定完了率 m_dec
         my_spin_sum = sum(a['s'] for a in my_agents)
-        total_spin_sum = comm.allreduce(my_spin_sum, op=MPI.SUM)
-        m_dec = total_spin_sum / N_AGENTS
+        # total_spin_sum = comm.allreduce(my_spin_sum, op=MPI.SUM)
+        m_dec = my_spin_sum / N_AGENTS
 
         # 避難完了率 m_evac
         my_safe_count = sum(1 for a in my_agents if V_field[int(a['y']), int(a['x'])] == 0)
-        total_safe_count = comm.allreduce(my_safe_count, op=MPI.SUM)
-        m_evac = total_safe_count / N_AGENTS
+        # total_safe_count = comm.allreduce(my_safe_count, op=MPI.SUM)
+        m_evac = my_safe_count / N_AGENTS
                 
         # --- [フェーズ4] エージェントのマイグレーション（境界越え） ---
         agents_to_send_up = []
