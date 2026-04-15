@@ -1,8 +1,8 @@
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
-from sqlalchemy import create_engine
+# import matplotlib.pyplot as plt
+# import matplotlib.animation as animation
+# from sqlalchemy import create_engine
 from scipy.ndimage import distance_transform_edt
 from scipy.signal import convolve2d
 import skfmm
