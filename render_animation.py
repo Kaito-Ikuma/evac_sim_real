@@ -21,7 +21,7 @@ for _, row in df.iterrows():
 V_field_visual = np.where(obstacles, np.nan, V_field)
 
 print("▼ 2. 計算結果ファイルを取得しています...")
-file_list = sorted(glob.glob("simulation_results/density_frame_*.npy"))
+file_list = sorted(glob.glob("simulation_results_threshold/density_frame_*.npy"))
 if not file_list:
     print("エラー: 結果ファイルが見つかりません。")
     exit()
@@ -101,6 +101,6 @@ def update(frame_idx):
 
 ani = animation.FuncAnimation(fig, update, frames=N_FRAMES, interval=200, blit=True)
 
-output_filename = "mpi_avalanche_with_graph.gif"
+output_filename = "mpi_avalanche_with_graph_threshold.gif"
 ani.save(output_filename, writer='pillow', fps=5)
 print(f"▼ 完了！ '{output_filename}' を保存しました。")
