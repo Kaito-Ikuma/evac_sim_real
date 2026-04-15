@@ -22,8 +22,8 @@ for _, row in df_map.iterrows():
 V_field_visual = np.where(obstacles, np.nan, V_field)
 
 print("▼ 2. 計算結果と統計ログを取得しています...")
-file_list = sorted(glob.glob("simulation_results_threshold/density_frame_*.npy"))
-stats_csv = "simulation_results_threshold/macro_stats.csv"
+file_list = sorted(glob.glob("simulation_results_threshold_10m/simulation_results_threshold/density_frame_*.npy"))
+stats_csv = "simulation_results_threshold_10m/simulation_results_threshold/macro_stats.csv"
 
 if not file_list or not os.path.exists(stats_csv):
     print("エラー: 結果ファイルまたは macro_stats.csv が見つかりません。")
@@ -47,7 +47,7 @@ fig.tight_layout(pad=5.0)
 ax1.imshow(V_field_visual, cmap='Blues', origin='lower', alpha=0.5)
 initial_data = np.load(file_list[0])
 masked_data = np.ma.masked_where(initial_data == 0, initial_data)
-heatmap = ax1.imshow(masked_data, cmap='YlOrRd', origin='lower', alpha=0.9, vmin=1, vmax=20.0)
+heatmap = ax1.imshow(masked_data, cmap='Reds', origin='lower', alpha=1.0, vmin=0.0, vmax=3.0)
 title = ax1.set_title(f"Quasi-static State | External Field (h): {h_ext_list[0]:.3f}", fontsize=14)
 ax1.set_xlim(0, GRID_W)
 ax1.set_ylim(0, GRID_H)
@@ -101,6 +101,6 @@ def update(frame_idx):
 
 ani = animation.FuncAnimation(fig, update, frames=N_FRAMES, interval=200, blit=True)
 
-output_filename = "mpi_avalanche_with_dec_and_evac.gif"
-ani.save(output_filename, writer='pillow', fps=5)
+output_filename = "simulation_results_threshold_10m/mpi_avalanche_with_dec_and_evac.gif"
+ani.save(output_filename, writer='pillow', fps=5, dpi=150)
 print(f"▼ 完了！ '{output_filename}' を保存しました。")
