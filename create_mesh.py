@@ -14,7 +14,7 @@ print("▼ 2. シミュレーション用の空間メッシュ（マス目）を
 minx, miny, maxx, maxy = 138.22, 36.65, 138.30, 36.74
 
 # メッシュのサイズ（0.001度は約100mに相当します）
-grid_size = 0.001
+grid_size = 0.0001
 
 # x座標とy座標の配列を作成
 x_coords = np.arange(minx, maxx, grid_size)
@@ -29,7 +29,7 @@ for x in x_coords:
 
 # GeoDataFrameに変換
 mesh_gdf = gpd.GeoDataFrame({'mesh_id': range(len(grid_polygons))}, geometry=grid_polygons, crs="EPSG:4326")
-print(f"   -> {len(mesh_gdf)} 個のマス目（約100m四方）を作成しました。")
+print(f"   -> {len(mesh_gdf)} 個のマス目（約10m四方）を作成しました。")
 
 print("▼ 3. ハザードマップと重ね合わせて『危険度』を判定しています...")
 # 空間結合（Spatial Join）：マス目がハザードマップと重なっているかを判定

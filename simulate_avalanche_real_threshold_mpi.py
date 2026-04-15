@@ -97,7 +97,7 @@ V_field = distance_field
 # ==========================================
 # 3. マルチエージェントの設定
 # ==========================================
-N_AGENTS = 1000
+N_AGENTS = 2000
 
 KERNEL_SIZE = 51  # 51x51マス（約5000m四方）の範囲まで影響を考慮
 # k_center = KERNEL_SIZE // 2
@@ -131,8 +131,8 @@ agents_y = danger_y[initial_indices].astype(float)
 alpha = 0.0      
 T = 0.01         # ゆらぎを極小化し、確率的な「漏れ」を完全に防ぐ（T=0.1から変更）
 h_ext = 0.0      # 初期状態
-C_max = 20.0     # マスの最大収容人数
-R_radius = 100.0      # 候補集合の半径 R (距離)
+C_max = 50.0     # マスの最大収容人数
+R_radius = 2.0      # 候補集合の半径 R (距離)
 c_neighbors = 50     # サンプルする近傍数 c
 sigma_J = 0.5        # 相互作用 J_ij のばらつき (標準偏差ではなく分散 σ_J^2 の平方根)
 T_dec = 0.01          # 決定温度 (有効ノイズ)
@@ -174,7 +174,7 @@ for i in range(N_AGENTS):
 # ==========================================
 # 4. メインシミュレーションループ（MPI・保存のみ）
 # ==========================================
-RELAXATION_STEPS = 500
+RELAXATION_STEPS = 5000
 NUM_FRAMES = 150  # 外場 h_ext を変化させる回数
 
 # 結果保存用のディレクトリを作成（Rank 0 のみ実行）
@@ -192,26 +192,19 @@ for frame in range(NUM_FRAMES):
     for step in range(RELAXATION_STEPS):
 
         # ==========================================
-        # [フェーズ0] ゴーストエージェントの通信 (Halo Exchange)
         # ==========================================
-        # 自分の境界から半径 R 以内にいるエージェントを抽出し、隣のコアへ送る準備
-        send_to_up = [a for a in my_agents if a['y'] < my_y_min + R_radius]
-        send_to_down = [a for a in my_agents if a['y'] > my_y_max - R_radius]
-        
-        recv_from_up = []
-        recv_from_down = []
+        # [フェーズ0] 全エージェント情報の共有 (Allgather)
+        # ==========================================
+        # 自分が担当しているエージェントの「座標とスピン」だけを抽出
+        my_simple_agents = [{'x': a['x'], 'y': a['y'], 's': a['s']} for a in my_agents]
 
-        # 上のコア(rank-1)との送受信
-        if rank > 0:
-            recv_from_up = comm.sendrecv(send_to_up, dest=rank-1, source=rank-1)
-        # 下のコア(rank+1)との送受信
-        if rank < size - 1:
-            recv_from_down = comm.sendrecv(send_to_down, dest=rank+1, source=rank+1)
+        # MPIで全コアのデータをかき集める（リストのリストが返ってくる）
+        gathered_agents = comm.allgather(my_simple_agents)
 
-        # 自分が見える全エージェント（自分自身の担当 + 上下のゴースト）
-        all_visible_agents = my_agents + recv_from_up + recv_from_down
+        # リストを平坦化（Flatten）して、全エージェントのリストを作成
+        all_visible_agents = [agent for sublist in gathered_agents for agent in sublist]
 
-        # 高速なベクトル計算のために numpy 配列化
+        # numpy配列化（フェーズ1のベクトル計算用）
         all_x = np.array([a['x'] for a in all_visible_agents])
         all_y = np.array([a['y'] for a in all_visible_agents])
         all_s = np.array([a['s'] for a in all_visible_agents])
@@ -278,14 +271,14 @@ for frame in range(NUM_FRAMES):
         density, _, _ = np.histogram2d(my_agents_y, my_agents_x, bins=[range(GRID_H+1), range(GRID_W+1)])
         density = np.ascontiguousarray(density)
 
-        # 意思決定用の局所スピン場（自分の担当エリアの s_i をマッピング）
-        local_spin_grid = np.zeros((GRID_H, GRID_W))
-        for a in my_agents:
-            local_spin_grid[int(a['y']), int(a['x'])] += a['s']
+        # # 意思決定用の局所スピン場（自分の担当エリアの s_i をマッピング）
+        # local_spin_grid = np.zeros((GRID_H, GRID_W))
+        # for a in my_agents:
+        #     local_spin_grid[int(a['y']), int(a['x'])] += a['s']
 
-        # MPI: スピン場を全コアで合算・共有し、完全なグローバルスピン場を作成
-        global_spin_grid = np.zeros_like(local_spin_grid)
-        comm.Allreduce(local_spin_grid, global_spin_grid, op=MPI.SUM)
+        # # MPI: スピン場を全コアで合算・共有し、完全なグローバルスピン場を作成
+        # global_spin_grid = np.zeros_like(local_spin_grid)
+        # comm.Allreduce(local_spin_grid, global_spin_grid, op=MPI.SUM)
 
         # # --- [フェーズ1] 相互作用場の計算とのり代交換 ---
         # # 空間カーネル K を用いた畳み込み：これが sum J_ij * K * s_j に相当します
