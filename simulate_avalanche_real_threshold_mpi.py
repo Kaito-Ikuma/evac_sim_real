@@ -8,6 +8,7 @@ from scipy.signal import convolve2d
 import skfmm
 from mpi4py import MPI
 import os 
+import time; start = time.time()
 
 comm = MPI.COMM_WORLD
 rank = comm.Get_rank()
@@ -391,7 +392,7 @@ for frame in range(NUM_FRAMES):
         np.save(filename, global_density)
         history_log.append([current_h_ext, m_dec, m_evac]) 
         print(f"[Frame {frame:02d}/{NUM_FRAMES-1}] 緩和完了 (h_ext={current_h_ext:.2f}, m_dec={m_dec:.2f}, m_evac={m_evac:.2f}) -> 保存: {filename}")
-
+print(f"Time: {time.time() - start}s")
 if rank == 0:
     df_log = pd.DataFrame(history_log, columns=['h_ext', 'm_dec', 'm_evac'])
     df_log.to_csv(os.path.join(output_dir, "macro_stats.csv"), index=False)
