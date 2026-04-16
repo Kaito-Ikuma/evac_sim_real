@@ -164,11 +164,17 @@ my_agents = []
 for i in range(N_AGENTS):
     if my_y_min <= agents_y[i] <= my_y_max:
         agent_dict = {
+            'id': i,
             'x': agents_x[i],
             'y': agents_y[i],
             'mu': mu_array[i],
             'phi': phi_bar_array[i],
-            's': -1
+            's': -1,
+            'local_density_before_move': 0.0,
+            'local_density_after_move': 0.0,
+            'step_when_decided': -1,
+            'evacuation_time': -1,
+            'rank': rank
         }
         my_agents.append(agent_dict)
 
@@ -179,11 +185,13 @@ RELAXATION_STEPS = 5000
 NUM_FRAMES = 400  # 外場 h_ext を変化させる回数
 
 # 結果保存用のディレクトリを作成（Rank 0 のみ実行）
-output_dir = "simulation_results_threshold"
+output_dir = "simulation_results_threshold_10m"
 history_log = []
 if rank == 0:
     os.makedirs(output_dir, exist_ok=True)
     print("=== MPI並列計算を開始します ===")
+
+
 
 # 外場 h_ext を段階的に上げながら計算を進める
 for frame in range(NUM_FRAMES):
@@ -258,18 +266,35 @@ for frame in range(NUM_FRAMES):
 
             # --- 5. 確率的スピン更新 P(s = +1) ---
             P_plus1 = 1.0 / (1.0 + np.exp(-2.0 * H_i / T_dec))
-            
+            old_s = agent['s']
             if np.random.rand() < P_plus1:
                 agent['s'] = 1
             else:
                 agent['s'] = -1
+            if old_s == -1 and agent['s'] == 1 and agent['step_when_decided'] == -1:
+               agent['step_when_decided'] = frame * RELAXATION_STEPS + step
         
         # --- [フェーズ0] 密度場とスピン場の計算 ---
         my_agents_y = [a['y'] for a in my_agents]
         my_agents_x = [a['x'] for a in my_agents]
+
+        density_local_before, _, _ = np.histogram2d(
+            my_agents_y, my_agents_x,
+            bins=[range(GRID_H+1), range(GRID_W+1)]
+        )
+        density_local_before = np.ascontiguousarray(density_local_before)
+
+        # 2. 移動前グローバル密度
+        density_global_before = np.zeros_like(density_local_before)
+        comm.Allreduce(density_local_before, density_global_before, op=MPI.SUM)
+
+        # 3. before を記録
+        for agent in my_agents:
+            cx, cy = int(agent['x']), int(agent['y'])
+            agent['local_density_before_move'] = density_global_before[cy, cx]
         
         # 物理移動用の人口密度
-        density, _, _ = np.histogram2d(my_agents_y, my_agents_x, bins=[range(GRID_H+1), range(GRID_W+1)])
+        density = density_local_before.copy()
         density = np.ascontiguousarray(density)
 
         # # 意思決定用の局所スピン場（自分の担当エリアの s_i をマッピング）
@@ -305,46 +330,65 @@ for frame in range(NUM_FRAMES):
         #         agent['s'] = -1
 
         # # --- [フェーズ3] レイヤー2：物理空間の移動 (Floor Field Dynamics) ---
+
         for agent in my_agents:
             if agent['s'] == -1:
-                continue # 意思決定が -1 の人は動かない
+                cx, cy = int(agent['x']), int(agent['y'])
+                # agent['local_density_after_move'] = density[cy, cx]
+                continue
 
             cx, cy = int(agent['x']), int(agent['y'])
+
             if V_field[cy, cx] == 0:
-                continue # すでに安全圏
-                
+                if agent['evacuation_time'] == -1:
+                    agent['evacuation_time'] = frame * RELAXATION_STEPS + step
+                # agent['local_density_after_move'] = density[cy, cx]
+                continue
+
             moves = [(0,1), (0,-1), (1,0), (-1,0)]
             dx, dy = moves[np.random.randint(len(moves))]
             nx, ny = cx + dx, cy + dy
-            
+
             if nx < 0 or nx >= GRID_W or ny < 0 or ny >= GRID_H:
+                # agent['local_density_after_move'] = density[cy, cx]
                 continue
-                
-            # 移動確率は「物理的なポテンシャル差 (delta_V)」のみで決まる
+
             delta_V = V_field[ny, nx] - V_field[cy, cx]
-            
-            # 温度 T による揺らぎと渋滞ペナルティ
             P_move_base = 1.0 / (1.0 + np.exp(delta_V / T))
             capacity_penalty = max(0.0, 1.0 - (density[ny, nx] / C_max))
             P_move_final = P_move_base * capacity_penalty
-            
+
             if np.random.rand() < P_move_final:
                 density[cy, cx] -= 1
                 density[ny, nx] += 1
                 agent['x'] = nx
                 agent['y'] = ny
 
-        # --- [フェーズ4] マクロ統計量 m_dec と m_evac の算出 ---
-        # 意思決定完了率 m_dec
-        my_spin_sum = sum(a['s'] for a in my_agents)
-        # total_spin_sum = comm.allreduce(my_spin_sum, op=MPI.SUM)
-        m_dec = my_spin_sum / N_AGENTS
+            ax, ay = int(agent['x']), int(agent['y'])
 
-        # 避難完了率 m_evac
-        my_safe_count = sum(1 for a in my_agents if V_field[int(a['y']), int(a['x'])] == 0)
-        # total_safe_count = comm.allreduce(my_safe_count, op=MPI.SUM)
-        m_evac = my_safe_count / N_AGENTS
-                
+            if V_field[ay, ax] == 0 and agent['evacuation_time'] == -1:
+                agent['evacuation_time'] = frame * RELAXATION_STEPS + step
+      
+        my_agents_y_after = [a['y'] for a in my_agents]
+        my_agents_x_after = [a['x'] for a in my_agents]
+
+        density_local_after, _, _ = np.histogram2d(
+            my_agents_y_after, my_agents_x_after,
+            bins=[range(GRID_H+1), range(GRID_W+1)]
+        )
+        density_local_after = np.ascontiguousarray(density_local_after)
+
+        # 6. 移動後グローバル密度
+        density_global_after = np.zeros_like(density_local_after)
+        comm.Allreduce(density_local_after, density_global_after, op=MPI.SUM)
+
+        # 7. after を記録
+        for agent in my_agents:
+            ax, ay = int(agent['x']), int(agent['y'])
+            agent['local_density_after_move'] = density_global_after[ay, ax]
+
+
+
         # --- [フェーズ4] エージェントのマイグレーション（境界越え） ---
         agents_to_send_up = []
         agents_to_send_down = []
@@ -362,25 +406,40 @@ for frame in range(NUM_FRAMES):
 
         if rank > 0:
             incoming_from_up = comm.sendrecv(agents_to_send_up, dest=rank-1, source=rank-1)
+            for a in incoming_from_up:
+                a['rank'] = rank
             my_agents.extend(incoming_from_up)
 
         if rank < size - 1:
             incoming_from_down = comm.sendrecv(agents_to_send_down, dest=rank+1, source=rank+1)
+            for a in incoming_from_down:
+                a['rank'] = rank
             my_agents.extend(incoming_from_down)
+                
+
 
     # ==========================================
     # 5. 緩和完了後の結果保存フェーズ (MPI Reduce)
     # ==========================================
 
+
     # 自分のコアが担当しているエージェントの情報をリスト化
     my_agents_info = []
     for a in my_agents:
         my_agents_info.append({
-            'agent_id': a['id'], # もし初期化時にIDを振っていれば
+            'agent_id': a['id'],
             'x': a['x'],
             'y': a['y'],
-            's': a['s'],         # 意思 (1:避難, -1:待機)
-            'phi': a['phi'],     # 正常性バイアス
+            's': a['s'],
+            'phi': a['phi'],
+            'mu': a['mu'],
+
+            'local_density_before_move': a['local_density_before_move'],
+            'local_density_after_move': a['local_density_after_move'],
+            'step_when_decided': a['step_when_decided'],
+            'evacuation_time': a['evacuation_time'],
+            'rank': a['rank'],
+
             'is_safe': 1 if V_field[int(a['y']), int(a['x'])] == 0 else 0
         })
     # 全コアのエージェント情報をRank 0にかき集める
@@ -390,7 +449,7 @@ for frame in range(NUM_FRAMES):
     global_density = np.zeros_like(density_contig)
     
     # 全コアのdensityを足し合わせてマップ全体を復元
-    comm.Reduce(density_contig, global_density, op=MPI.SUM, root=0)
+    comm.Allreduce(density_contig, global_density, op=MPI.SUM)
     
     # 意思決定完了率 m_dec (スピン s = 1 の人の割合)
     my_decided = sum(1 for a in my_agents if a['s'] == 1)
