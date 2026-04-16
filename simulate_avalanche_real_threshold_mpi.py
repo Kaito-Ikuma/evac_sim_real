@@ -40,7 +40,7 @@ size = comm.Get_size()
 # print("   -> 'base_map_potential_real.csv' として保存しました。")
 
 print("▼ 1. CSVからポテンシャル場 V(x,y) を抽出しています...")
-df = pd.read_csv("base_map_potential_real.csv")
+df = pd.read_csv("base_map_potential_real_10m.csv")
 
 # ==========================================
 # 2. シミュレーション空間（2Dグリッド）の構築
@@ -176,7 +176,7 @@ for i in range(N_AGENTS):
 # 4. メインシミュレーションループ（MPI・保存のみ）
 # ==========================================
 RELAXATION_STEPS = 5000
-NUM_FRAMES = 150  # 外場 h_ext を変化させる回数
+NUM_FRAMES = 400  # 外場 h_ext を変化させる回数
 
 # 結果保存用のディレクトリを作成（Rank 0 のみ実行）
 output_dir = "simulation_results_threshold"
@@ -187,7 +187,7 @@ if rank == 0:
 
 # 外場 h_ext を段階的に上げながら計算を進める
 for frame in range(NUM_FRAMES):
-    current_h_ext = frame * 0.10
+    current_h_ext = frame * 0.005
     
     # ▼【内部で時間を進める（準静的過程）】
     for step in range(RELAXATION_STEPS):
@@ -371,6 +371,21 @@ for frame in range(NUM_FRAMES):
     # ==========================================
     # 5. 緩和完了後の結果保存フェーズ (MPI Reduce)
     # ==========================================
+
+    # 自分のコアが担当しているエージェントの情報をリスト化
+    my_agents_info = []
+    for a in my_agents:
+        my_agents_info.append({
+            'agent_id': a['id'], # もし初期化時にIDを振っていれば
+            'x': a['x'],
+            'y': a['y'],
+            's': a['s'],         # 意思 (1:避難, -1:待機)
+            'phi': a['phi'],     # 正常性バイアス
+            'is_safe': 1 if V_field[int(a['y']), int(a['x'])] == 0 else 0
+        })
+    # 全コアのエージェント情報をRank 0にかき集める
+    gathered_agents = comm.gather(my_agents_info, root=0)
+
     density_contig = np.ascontiguousarray(density)
     global_density = np.zeros_like(density_contig)
     
@@ -388,6 +403,13 @@ for frame in range(NUM_FRAMES):
     m_evac = total_safe / N_AGENTS
     
     if rank == 0:
+        # リストのリストを平坦化（Flatten）
+        all_agents_flat = [agent for sublist in gathered_agents for agent in sublist]
+        df_agents = pd.DataFrame(all_agents_flat)
+        
+        # 毎フレーム、エージェント全員の状態をCSVとして保存
+        agent_csv_path = os.path.join(output_dir, f"agents_frame_{frame:03d}.csv")
+        df_agents.to_csv(agent_csv_path, index=False)
         filename = os.path.join(output_dir, f"density_frame_{frame:03d}.npy")
         np.save(filename, global_density)
         history_log.append([current_h_ext, m_dec, m_evac]) 
