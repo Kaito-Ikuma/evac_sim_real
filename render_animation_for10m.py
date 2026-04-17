@@ -20,8 +20,8 @@ obstacles = np.nan_to_num(obstacles, nan=0.0).astype(bool)
 V_field_visual = np.where(obstacles, np.nan, V_field)
 
 print("▼ 2. 計算結果と統計ログを取得しています...")
-file_list = sorted(glob.glob("simulation_results_threshold_10m/simulation_results_threshold/density_frame_*.npy"))
-stats_csv = "simulation_results_threshold_10m/simulation_results_threshold/macro_stats.csv"
+file_list = sorted(glob.glob("simulation_results_threshold_10m/simulation_results_threshold_10m/density_frame_*.npy"))
+stats_csv = "simulation_results_threshold_10m/simulation_results_threshold_10m/macro_stats.csv"
 
 if not file_list or not os.path.exists(stats_csv):
     print("エラー: 結果ファイルまたは macro_stats.csv が見つかりません。")
@@ -42,18 +42,18 @@ if N_FRAMES != len(df_stats):
 # ==========================================
 # 【ここを追加】h_ext が 2.0 までのフレームで切り取る
 # ==========================================
-# h_ext_list の中で、2.0 を超えた最初のインデックス（位置）を探す
-limit_idx = np.where(h_ext_list >= 2.0)[0]
+# # h_ext_list の中で、2.0 を超えた最初のインデックス（位置）を探す
+# limit_idx = np.where(h_ext_list >= 2.0)[0]
 
-# もし 2.0 を超えるデータが存在すれば、そこまでで打ち切る
-if len(limit_idx) > 0:
-    N_FRAMES = limit_idx[0] + 1  # 2.0を超えた最初のフレームまで
+# # もし 2.0 を超えるデータが存在すれば、そこまでで打ち切る
+# if len(limit_idx) > 0:
+#     N_FRAMES = limit_idx[0] + 1  # 2.0を超えた最初のフレームまで
     
-    # グラフのX軸の最大値も 2.0 に固定する（後で使う用）
-    h_ext_max_display = 2.0
-    print(f"▼ 描画範囲を h_ext=2.0 (フレーム {N_FRAMES}/{len(file_list)}) までに制限します。")
-else:
-    h_ext_max_display = max(h_ext_list) if max(h_ext_list) > 0 else 1.0
+#     # グラフのX軸の最大値も 2.0 に固定する（後で使う用）
+#     h_ext_max_display = 2.0
+#     print(f"▼ 描画範囲を h_ext=2.0 (フレーム {N_FRAMES}/{len(file_list)}) までに制限します。")
+# else:
+#     h_ext_max_display = max(h_ext_list) if max(h_ext_list) > 0 else 1.0
 
 print("▼ 3. アニメーション（3画面統合）を生成しています...")
 # 描画領域のセットアップ（3分割、高さの比率を 2:1:1 にする）
@@ -82,8 +82,8 @@ ax1.set_ylim(0, GRID_H)
 # ==========================================
 ax2.set_title("Physical Evacuation Rate (m_evac)", fontsize=12)
 ax2.set_ylabel("Evacuation Rate", fontsize=10)
-# ax2.set_xlim(0, max(h_ext_list) if max(h_ext_list) > 0 else 1.0)
-ax2.set_xlim(0, h_ext_max_display)
+ax2.set_xlim(0, max(h_ext_list) if max(h_ext_list) > 0 else 1.0)
+# ax2.set_xlim(0, h_ext_max_display)
 ax2.set_ylim(-0.05, 1.05)
 ax2.grid(True)
 ax2.plot(h_ext_list, m_evac_list, color='gray', linestyle='--', alpha=0.5) # 未来の軌跡
@@ -96,8 +96,8 @@ point_evac, = ax2.plot([], [], marker='o', color='red', markersize=8)
 ax3.set_title("Decision Making Rate (m_dec)", fontsize=12)
 ax3.set_xlabel("External Field (h_ext)", fontsize=12)
 ax3.set_ylabel("Decision Rate", fontsize=10)
-# ax3.set_xlim(0, max(h_ext_list) if max(h_ext_list) > 0 else 1.0)
-ax3.set_xlim(0, h_ext_max_display)
+ax3.set_xlim(0, max(h_ext_list) if max(h_ext_list) > 0 else 1.0)
+# ax3.set_xlim(0, h_ext_max_display)
 ax3.set_ylim(-0.05, 1.05)
 ax3.grid(True)
 ax3.plot(h_ext_list, m_dec_list, color='gray', linestyle='--', alpha=0.5) # 未来の軌跡
