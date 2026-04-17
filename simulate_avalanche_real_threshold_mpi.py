@@ -158,323 +158,529 @@ phi_bar_array = np.clip(phi_bar_array, 0.0, None)
 mu_array = np.clip(mu_array, 0.0, None)
 phi_bar_array = np.clip(phi_bar_array, 0.0, None)
 
-my_agents = []
+# ==========================================
+# 3.5 ローカル配列化 + ghost + 可変緩和 用の補助設定
+# ==========================================
+HALO_MOVE = 1                       # 移動は上下1マスなので密度の halo は 1
+HALO_GHOST = int(np.ceil(R_radius)) # 意思決定近傍 R_radius 分の ghost 幅
+MAX_RELAX_STEPS = 5000
+MIN_RELAX_STEPS = 200
+STABLE_STEPS_REQUIRED = 20
+EVENT_TOL = 5
 
-# N_AGENTS人全員をチェックし、自分の担当エリア(my_y_min 〜 my_y_max)にいる人だけを確保
-for i in range(N_AGENTS):
-    if my_y_min <= agents_y[i] <= my_y_max:
-        agent_dict = {
-            'id': i,
-            'x': agents_x[i],
-            'y': agents_y[i],
-            'mu': mu_array[i],
-            'phi': phi_bar_array[i],
-            's': -1,
-            'local_density_before_move': 0.0,
-            'local_density_after_move': 0.0,
-            'step_when_decided': -1,
-            'evacuation_time': -1,
-            'rank': rank
-        }
-        my_agents.append(agent_dict)
+local_h = my_y_max - my_y_min + 1
+
+
+def y_to_local(y_global: int) -> int:
+    """
+    グローバル y 座標 -> この rank の density_local 上の行番号
+    owned 領域は [HALO_MOVE, HALO_MOVE + local_h - 1]
+    """
+    return int(y_global - my_y_min) + HALO_MOVE
+
+
+def pack_full_payload(agent_id, x, y, mu, phi, s,
+                      dens_before, dens_after,
+                      step_decided, evac_time, owner_rank):
+    """
+    rank 間 migration 用 payload
+    空なら shape=(0, 10) の配列を返す
+    """
+    if len(agent_id) == 0:
+        return np.empty((0, 10), dtype=np.float64)
+
+    return np.column_stack([
+        agent_id.astype(np.float64),
+        x.astype(np.float64),
+        y.astype(np.float64),
+        mu.astype(np.float64),
+        phi.astype(np.float64),
+        s.astype(np.float64),
+        dens_before.astype(np.float64),
+        dens_after.astype(np.float64),
+        step_decided.astype(np.float64),
+        evac_time.astype(np.float64),
+    ])
+
+
+def append_full_payload(payload,
+                        agent_id, x, y, mu, phi, s,
+                        dens_before, dens_after,
+                        step_decided, evac_time, owner_rank,
+                        density_local):
+    """
+    受信 payload をローカル配列へ追加し、owned 行の density_local も更新する
+    """
+    if payload is None:
+        return (agent_id, x, y, mu, phi, s,
+                dens_before, dens_after, step_decided, evac_time, owner_rank,
+                density_local)
+
+    payload = np.asarray(payload)
+    if payload.size == 0:
+        return (agent_id, x, y, mu, phi, s,
+                dens_before, dens_after, step_decided, evac_time, owner_rank,
+                density_local)
+
+    if payload.ndim == 1:
+        payload = payload.reshape(1, -1)
+
+    recv_id          = payload[:, 0].astype(np.int32)
+    recv_x           = payload[:, 1].astype(np.int32)
+    recv_y           = payload[:, 2].astype(np.int32)
+    recv_mu          = payload[:, 3].astype(np.float64)
+    recv_phi         = payload[:, 4].astype(np.float64)
+    recv_s           = payload[:, 5].astype(np.int8)
+    recv_dens_before = payload[:, 6].astype(np.float64)
+    recv_dens_after  = payload[:, 7].astype(np.float64)
+    recv_step_dec    = payload[:, 8].astype(np.int64)
+    recv_evac        = payload[:, 9].astype(np.int64)
+    recv_owner       = np.full(len(recv_id), rank, dtype=np.int32)
+
+    agent_id    = np.concatenate([agent_id, recv_id])
+    x           = np.concatenate([x, recv_x])
+    y           = np.concatenate([y, recv_y])
+    mu          = np.concatenate([mu, recv_mu])
+    phi         = np.concatenate([phi, recv_phi])
+    s           = np.concatenate([s, recv_s])
+    dens_before = np.concatenate([dens_before, recv_dens_before])
+    dens_after  = np.concatenate([dens_after, recv_dens_after])
+    step_decided = np.concatenate([step_decided, recv_step_dec])
+    evac_time   = np.concatenate([evac_time, recv_evac])
+    owner_rank  = np.concatenate([owner_rank, recv_owner])
+
+    # 受信したエージェントは、この rank の owned 領域に入っているはず
+    for xi, yi in zip(recv_x, recv_y):
+        density_local[y_to_local(int(yi)), int(xi)] += 1
+
+    return (agent_id, x, y, mu, phi, s,
+            dens_before, dens_after, step_decided, evac_time, owner_rank,
+            density_local)
+
+
+def build_ghost_payload(x, y, s):
+    """
+    意思決定近傍参照用の ghost payload を上下隣接 rank 向けに作る
+    列は [x, y, s]
+    """
+    empty = np.empty((0, 3), dtype=np.int32)
+
+    if len(x) == 0:
+        return empty, empty
+
+    up_mask = (y <= my_y_min + HALO_GHOST - 1)
+    down_mask = (y >= my_y_max - HALO_GHOST + 1)
+
+    up_payload = empty
+    down_payload = empty
+
+    if np.any(up_mask):
+        up_payload = np.column_stack([
+            x[up_mask].astype(np.int32),
+            y[up_mask].astype(np.int32),
+            s[up_mask].astype(np.int32),
+        ])
+
+    if np.any(down_mask):
+        down_payload = np.column_stack([
+            x[down_mask].astype(np.int32),
+            y[down_mask].astype(np.int32),
+            s[down_mask].astype(np.int32),
+        ])
+
+    return up_payload, down_payload
+
+
+def exchange_density_halo(density_local):
+    """
+    density_local の owned 境界 1 行だけを上下隣 rank と交換
+    """
+    top_owned = HALO_MOVE
+    bottom_owned = HALO_MOVE + local_h - 1
+
+    # 上側 ghost row
+    if rank > 0:
+        recv_top = comm.sendrecv(
+            sendobj=density_local[top_owned, :].copy(),
+            dest=rank - 1,
+            source=rank - 1
+        )
+        density_local[0, :] = recv_top
+    else:
+        density_local[0, :] = 0
+
+    # 下側 ghost row
+    if rank < size - 1:
+        recv_bottom = comm.sendrecv(
+            sendobj=density_local[bottom_owned, :].copy(),
+            dest=rank + 1,
+            source=rank + 1
+        )
+        density_local[bottom_owned + 1, :] = recv_bottom
+    else:
+        density_local[bottom_owned + 1, :] = 0
+
+    return density_local
+
 
 # ==========================================
-# 4. メインシミュレーションループ（MPI・保存のみ）
+# 3.6 dict -> NumPy配列へ置換
 # ==========================================
-RELAXATION_STEPS = 5000
-NUM_FRAMES = 400  # 外場 h_ext を変化させる回数
+local_init_mask = (agents_y >= my_y_min) & (agents_y <= my_y_max)
 
-# 結果保存用のディレクトリを作成（Rank 0 のみ実行）
+agent_id = np.arange(N_AGENTS, dtype=np.int32)[local_init_mask]
+x = agents_x[local_init_mask].astype(np.int32)
+y = agents_y[local_init_mask].astype(np.int32)
+mu = mu_array[local_init_mask].astype(np.float64)
+phi = phi_bar_array[local_init_mask].astype(np.float64)
+
+s = -np.ones(len(agent_id), dtype=np.int8)
+local_density_before_move = np.zeros(len(agent_id), dtype=np.float64)
+local_density_after_move = np.zeros(len(agent_id), dtype=np.float64)
+step_when_decided = -np.ones(len(agent_id), dtype=np.int64)
+evacuation_time = -np.ones(len(agent_id), dtype=np.int64)
+owner_rank = np.full(len(agent_id), rank, dtype=np.int32)
+
+# owned rows + 上下 halo 1 行
+density_local = np.zeros((local_h + 2 * HALO_MOVE, GRID_W), dtype=np.int32)
+
+for xi, yi in zip(x, y):
+    density_local[y_to_local(int(yi)), int(xi)] += 1
+
+
+# ==========================================
+# 4. メインシミュレーションループ（統合版）
+# ==========================================
+NUM_FRAMES = 400
+
 output_dir = "simulation_results_threshold_10m"
 history_log = []
 if rank == 0:
     os.makedirs(output_dir, exist_ok=True)
-    print("=== MPI並列計算を開始します ===")
+    print("=== MPI並列計算を開始します（統合版） ===")
 
+global_step_counter = 0
 
-
-# 外場 h_ext を段階的に上げながら計算を進める
 for frame in range(NUM_FRAMES):
     current_h_ext = frame * 0.005
-    
-    # ▼【内部で時間を進める（準静的過程）】
-    for step in range(RELAXATION_STEPS):
+
+    stable_count = 0
+    steps_used_this_frame = MAX_RELAX_STEPS
+
+    for step in range(MAX_RELAX_STEPS):
+        abs_step = global_step_counter + step
 
         # ==========================================
+        # [A] ghost agent 交換（意思決定用）
         # ==========================================
-        # [フェーズ0] 全エージェント情報の共有 (Allgather)
+        send_up_ghost, send_down_ghost = build_ghost_payload(x, y, s)
+
+        ghost_from_up = np.empty((0, 3), dtype=np.int32)
+        ghost_from_down = np.empty((0, 3), dtype=np.int32)
+
+        if rank > 0:
+            ghost_from_up = comm.sendrecv(
+                sendobj=send_up_ghost,
+                dest=rank - 1,
+                source=rank - 1
+            )
+            ghost_from_up = np.asarray(ghost_from_up, dtype=np.int32)
+
+        if rank < size - 1:
+            ghost_from_down = comm.sendrecv(
+                sendobj=send_down_ghost,
+                dest=rank + 1,
+                source=rank + 1
+            )
+            ghost_from_down = np.asarray(ghost_from_down, dtype=np.int32)
+
+        ghost_parts = []
+        if ghost_from_up.size > 0:
+            ghost_parts.append(ghost_from_up)
+        if ghost_from_down.size > 0:
+            ghost_parts.append(ghost_from_down)
+
+        if len(ghost_parts) > 0:
+            ghost_all = np.vstack(ghost_parts)
+            ghost_x = ghost_all[:, 0].astype(np.int32)
+            ghost_y = ghost_all[:, 1].astype(np.int32)
+            ghost_s = ghost_all[:, 2].astype(np.int8)
+            cand_x = np.concatenate([x, ghost_x])
+            cand_y = np.concatenate([y, ghost_y])
+            cand_s = np.concatenate([s, ghost_s])
+        else:
+            cand_x = x.copy()
+            cand_y = y.copy()
+            cand_s = s.copy()
+
         # ==========================================
-        # 自分が担当しているエージェントの「座標とスピン」だけを抽出
-        my_simple_agents = [{'x': a['x'], 'y': a['y'], 's': a['s']} for a in my_agents]
-
-        # MPIで全コアのデータをかき集める（リストのリストが返ってくる）
-        gathered_agents = comm.allgather(my_simple_agents)
-
-        # リストを平坦化（Flatten）して、全エージェントのリストを作成
-        all_visible_agents = [agent for sublist in gathered_agents for agent in sublist]
-
-        # numpy配列化（フェーズ1のベクトル計算用）
-        all_x = np.array([a['x'] for a in all_visible_agents])
-        all_y = np.array([a['y'] for a in all_visible_agents])
-        all_s = np.array([a['s'] for a in all_visible_agents])
-
+        # [B] 意思決定更新（owned agent のみ）
         # ==========================================
-        # [フェーズ1 & 2] 動的ネットワーク構築と意思決定 (Ising Update)
-        # ==========================================
-        # ※ my_agents (自分の担当) のみ更新する。ゴーストは参照用。
-        for i, agent in enumerate(my_agents):
-            
-            # --- 1. 候補集合 Ω_i(t) の作成 ---
-            dx = all_x - agent['x']
-            dy = all_y - agent['y']
-            distances = np.sqrt(dx**2 + dy**2)
+        local_flip_count = 0
 
-            # 自身(距離0)を除外 & 半径 R 以内を抽出
-            valid_mask = (distances > 0) & (distances <= R_radius)
+        for k in range(len(x)):
+            dx = cand_x - x[k]
+            dy = cand_y - y[k]
+            distances = np.sqrt(dx.astype(np.float64)**2 + dy.astype(np.float64)**2)
+
+            valid_mask = (distances > 0.0) & (distances <= R_radius)
             valid_indices = np.where(valid_mask)[0]
 
             if len(valid_indices) == 0:
-                # 候補が誰もいない場合は孤独（外場と正常性バイアスのみ）
-                H_i = current_h_ext - agent['phi']
+                H_i = current_h_ext - phi[k]
             else:
-                # --- 2. 確率 p_ij ∝ K(r_ij) の計算 ---
                 valid_distances = distances[valid_indices]
-                # カーネル K(r) = 1/r の例（減衰関数）
-                K_r = 1.0 / valid_distances 
-                p_ij = K_r / np.sum(K_r)  # 確率の合計を1に正規化
+                K_r = 1.0 / valid_distances
+                p_ij = K_r / np.sum(K_r)
 
-                # --- 3. c個の近傍をサンプルし N_i(t) を作る ---
-                # 候補が c より少ない場合は、いる人数だけサンプルする
                 actual_c = min(c_neighbors, len(valid_indices))
                 sampled_indices = np.random.choice(
-                    valid_indices, size=actual_c, replace=False, p=p_ij
+                    valid_indices,
+                    size=actual_c,
+                    replace=False,
+                    p=p_ij
                 )
 
-                # --- 4. 相互作用 J_ij の生成と H_i の計算 ---
-                # J_ij ~ N(μ_i / c, σ_J^2 / c)
-                # 分散が σ_J^2/c なので、標準偏差(scale)は √(σ_J^2 / c) = σ_J / √c となる
                 std_dev = sigma_J / np.sqrt(c_neighbors)
                 J_ij = np.random.normal(
-                    loc=agent['mu'] / c_neighbors, 
-                    scale=std_dev, 
+                    loc=mu[k] / c_neighbors,
+                    scale=std_dev,
                     size=actual_c
                 )
 
-                # Σ J_ij * s_j を計算
-                sum_interaction = np.sum(J_ij * all_s[sampled_indices])
-                H_i = current_h_ext - agent['phi'] + sum_interaction
+                sum_interaction = np.sum(J_ij * cand_s[sampled_indices])
+                H_i = current_h_ext - phi[k] + sum_interaction
 
-            # --- 5. 確率的スピン更新 P(s = +1) ---
             P_plus1 = 1.0 / (1.0 + np.exp(-2.0 * H_i / T_dec))
-            old_s = agent['s']
-            if np.random.rand() < P_plus1:
-                agent['s'] = 1
-            else:
-                agent['s'] = -1
-            if old_s == -1 and agent['s'] == 1 and agent['step_when_decided'] == -1:
-               agent['step_when_decided'] = frame * RELAXATION_STEPS + step
-        
-        # --- [フェーズ0] 密度場とスピン場の計算 ---
-        my_agents_y = [a['y'] for a in my_agents]
-        my_agents_x = [a['x'] for a in my_agents]
 
-        density_local_before, _, _ = np.histogram2d(
-            my_agents_y, my_agents_x,
-            bins=[range(GRID_H+1), range(GRID_W+1)]
-        )
-        density_local_before = np.ascontiguousarray(density_local_before)
+            old_s = s[k]
+            s[k] = 1 if (np.random.rand() < P_plus1) else -1
 
-        # 2. 移動前グローバル密度
-        density_global_before = np.zeros_like(density_local_before)
-        comm.Allreduce(density_local_before, density_global_before, op=MPI.SUM)
+            if old_s != s[k]:
+                local_flip_count += 1
 
-        # 3. before を記録
-        for agent in my_agents:
-            cx, cy = int(agent['x']), int(agent['y'])
-            agent['local_density_before_move'] = density_global_before[cy, cx]
-        
-        # 物理移動用の人口密度
-        density = density_local_before.copy()
-        density = np.ascontiguousarray(density)
+            if old_s == -1 and s[k] == 1 and step_when_decided[k] == -1:
+                step_when_decided[k] = abs_step
 
-        # # 意思決定用の局所スピン場（自分の担当エリアの s_i をマッピング）
-        # local_spin_grid = np.zeros((GRID_H, GRID_W))
-        # for a in my_agents:
-        #     local_spin_grid[int(a['y']), int(a['x'])] += a['s']
+        # ==========================================
+        # [C] density halo 交換（移動用）
+        # ==========================================
+        density_local = exchange_density_halo(density_local)
 
-        # # MPI: スピン場を全コアで合算・共有し、完全なグローバルスピン場を作成
-        # global_spin_grid = np.zeros_like(local_spin_grid)
-        # comm.Allreduce(local_spin_grid, global_spin_grid, op=MPI.SUM)
+        # ==========================================
+        # [D] 移動更新（density は増分更新）
+        # ==========================================
+        local_move_count = 0
 
-        # # --- [フェーズ1] 相互作用場の計算とのり代交換 ---
-        # # 空間カーネル K を用いた畳み込み：これが sum J_ij * K * s_j に相当します
-        # interaction_field = convolve2d(global_spin_grid, mu_kernel, mode='same')
+        for k in range(len(x)):
+            cx = int(x[k])
+            cy = int(y[k])
+            cy_loc = y_to_local(cy)
 
-        # 物理移動のためののり代（Halo）の交換 (densityのみ)
-        if rank > 0:
-            comm.Sendrecv(density[my_y_min, :], dest=rank-1, recvbuf=density[my_y_min-1, :], source=rank-1)
-        if rank < size - 1:
-            comm.Sendrecv(density[my_y_max, :], dest=rank+1, recvbuf=density[my_y_max+1, :], source=rank+1)
+            local_density_before_move[k] = density_local[cy_loc, cx]
 
-        # --- [フェーズ2] レイヤー1：意思決定の更新 (Ising Dynamics) ---
-        # for agent in my_agents:
-        #     cx, cy = int(agent['x']), int(agent['y'])
-            
-        #     # 局所場 H_i の計算：外場 - 正常性バイアス + 同調圧力(相互作用場)
-        #     H_i = current_h_ext - agent['phi'] + agent['mu'] * interaction_field[cy, cx]
-            
-        #     # スピンの更新 (ステップ関数)
-        #     if H_i > 0:
-        #         agent['s'] = 1
-        #     elif H_i < 0:
-        #         agent['s'] = -1
-
-        # # --- [フェーズ3] レイヤー2：物理空間の移動 (Floor Field Dynamics) ---
-
-        for agent in my_agents:
-            if agent['s'] == -1:
-                cx, cy = int(agent['x']), int(agent['y'])
-                # agent['local_density_after_move'] = density[cy, cx]
+            if s[k] == -1:
+                local_density_after_move[k] = density_local[cy_loc, cx]
                 continue
-
-            cx, cy = int(agent['x']), int(agent['y'])
 
             if V_field[cy, cx] == 0:
-                if agent['evacuation_time'] == -1:
-                    agent['evacuation_time'] = frame * RELAXATION_STEPS + step
-                # agent['local_density_after_move'] = density[cy, cx]
+                if evacuation_time[k] == -1:
+                    evacuation_time[k] = abs_step
+                local_density_after_move[k] = density_local[cy_loc, cx]
                 continue
 
-            moves = [(0,1), (0,-1), (1,0), (-1,0)]
-            dx, dy = moves[np.random.randint(len(moves))]
-            nx, ny = cx + dx, cy + dy
+            moves = [(0, 1), (0, -1), (1, 0), (-1, 0)]
+            mdx, mdy = moves[np.random.randint(4)]
+            nx = cx + mdx
+            ny = cy + mdy
 
             if nx < 0 or nx >= GRID_W or ny < 0 or ny >= GRID_H:
-                # agent['local_density_after_move'] = density[cy, cx]
+                local_density_after_move[k] = density_local[cy_loc, cx]
+                continue
+
+            ny_loc = y_to_local(ny)
+            if ny_loc < 0 or ny_loc >= density_local.shape[0]:
+                local_density_after_move[k] = density_local[cy_loc, cx]
                 continue
 
             delta_V = V_field[ny, nx] - V_field[cy, cx]
             P_move_base = 1.0 / (1.0 + np.exp(delta_V / T))
-            capacity_penalty = max(0.0, 1.0 - (density[ny, nx] / C_max))
+            capacity_penalty = max(0.0, 1.0 - (density_local[ny_loc, nx] / C_max))
             P_move_final = P_move_base * capacity_penalty
 
             if np.random.rand() < P_move_final:
-                density[cy, cx] -= 1
-                density[ny, nx] += 1
-                agent['x'] = nx
-                agent['y'] = ny
+                density_local[cy_loc, cx] -= 1
+                density_local[ny_loc, nx] += 1
+                x[k] = nx
+                y[k] = ny
+                local_move_count += 1
 
-            ax, ay = int(agent['x']), int(agent['y'])
+            ax = int(x[k])
+            ay = int(y[k])
+            ay_loc = y_to_local(ay)
 
-            if V_field[ay, ax] == 0 and agent['evacuation_time'] == -1:
-                agent['evacuation_time'] = frame * RELAXATION_STEPS + step
-      
-        my_agents_y_after = [a['y'] for a in my_agents]
-        my_agents_x_after = [a['x'] for a in my_agents]
-
-        density_local_after, _, _ = np.histogram2d(
-            my_agents_y_after, my_agents_x_after,
-            bins=[range(GRID_H+1), range(GRID_W+1)]
-        )
-        density_local_after = np.ascontiguousarray(density_local_after)
-
-        # 6. 移動後グローバル密度
-        density_global_after = np.zeros_like(density_local_after)
-        comm.Allreduce(density_local_after, density_global_after, op=MPI.SUM)
-
-        # 7. after を記録
-        for agent in my_agents:
-            ax, ay = int(agent['x']), int(agent['y'])
-            agent['local_density_after_move'] = density_global_after[ay, ax]
-
-
-
-        # --- [フェーズ4] エージェントのマイグレーション（境界越え） ---
-        agents_to_send_up = []
-        agents_to_send_down = []
-        agents_to_keep = []
-
-        for agent in my_agents:
-            if agent['y'] < my_y_min:
-                agents_to_send_up.append(agent)
-            elif agent['y'] > my_y_max:
-                agents_to_send_down.append(agent)
+            if 0 <= ay_loc < density_local.shape[0]:
+                local_density_after_move[k] = density_local[ay_loc, ax]
             else:
-                agents_to_keep.append(agent)
+                local_density_after_move[k] = 0.0
 
-        my_agents = agents_to_keep
+            if V_field[ay, ax] == 0 and evacuation_time[k] == -1:
+                evacuation_time[k] = abs_step
+
+        # ==========================================
+        # [E] 境界越え migration
+        # ==========================================
+        send_up_mask = (y < my_y_min)
+        send_down_mask = (y > my_y_max)
+        keep_mask = (~send_up_mask) & (~send_down_mask)
+
+        payload_up = pack_full_payload(
+            agent_id[send_up_mask], x[send_up_mask], y[send_up_mask],
+            mu[send_up_mask], phi[send_up_mask], s[send_up_mask],
+            local_density_before_move[send_up_mask],
+            local_density_after_move[send_up_mask],
+            step_when_decided[send_up_mask], evacuation_time[send_up_mask],
+            owner_rank[send_up_mask]
+        )
+
+        payload_down = pack_full_payload(
+            agent_id[send_down_mask], x[send_down_mask], y[send_down_mask],
+            mu[send_down_mask], phi[send_down_mask], s[send_down_mask],
+            local_density_before_move[send_down_mask],
+            local_density_after_move[send_down_mask],
+            step_when_decided[send_down_mask], evacuation_time[send_down_mask],
+            owner_rank[send_down_mask]
+        )
+
+        # 自分に残る agent だけ保持
+        agent_id = agent_id[keep_mask]
+        x = x[keep_mask]
+        y = y[keep_mask]
+        mu = mu[keep_mask]
+        phi = phi[keep_mask]
+        s = s[keep_mask]
+        local_density_before_move = local_density_before_move[keep_mask]
+        local_density_after_move = local_density_after_move[keep_mask]
+        step_when_decided = step_when_decided[keep_mask]
+        evacuation_time = evacuation_time[keep_mask]
+        owner_rank = owner_rank[keep_mask]
+
+        recv_from_up = np.empty((0, 10), dtype=np.float64)
+        recv_from_down = np.empty((0, 10), dtype=np.float64)
 
         if rank > 0:
-            incoming_from_up = comm.sendrecv(agents_to_send_up, dest=rank-1, source=rank-1)
-            for a in incoming_from_up:
-                a['rank'] = rank
-            my_agents.extend(incoming_from_up)
+            recv_from_up = comm.sendrecv(
+                sendobj=payload_up,
+                dest=rank - 1,
+                source=rank - 1
+            )
 
         if rank < size - 1:
-            incoming_from_down = comm.sendrecv(agents_to_send_down, dest=rank+1, source=rank+1)
-            for a in incoming_from_down:
-                a['rank'] = rank
-            my_agents.extend(incoming_from_down)
-                
+            recv_from_down = comm.sendrecv(
+                sendobj=payload_down,
+                dest=rank + 1,
+                source=rank + 1
+            )
 
+        (agent_id, x, y, mu, phi, s,
+         local_density_before_move, local_density_after_move,
+         step_when_decided, evacuation_time, owner_rank,
+         density_local) = append_full_payload(
+            recv_from_up,
+            agent_id, x, y, mu, phi, s,
+            local_density_before_move, local_density_after_move,
+            step_when_decided, evacuation_time, owner_rank,
+            density_local
+        )
+
+        (agent_id, x, y, mu, phi, s,
+         local_density_before_move, local_density_after_move,
+         step_when_decided, evacuation_time, owner_rank,
+         density_local) = append_full_payload(
+            recv_from_down,
+            agent_id, x, y, mu, phi, s,
+            local_density_before_move, local_density_after_move,
+            step_when_decided, evacuation_time, owner_rank,
+            density_local
+        )
+
+        # ==========================================
+        # [F] 可変緩和の停止判定
+        # ==========================================
+        global_events = comm.allreduce(local_flip_count + local_move_count, op=MPI.SUM)
+
+        if step >= MIN_RELAX_STEPS and global_events < EVENT_TOL:
+            stable_count += 1
+        else:
+            stable_count = 0
+
+        if stable_count >= STABLE_STEPS_REQUIRED:
+            steps_used_this_frame = step + 1
+            break
+
+    global_step_counter += steps_used_this_frame
 
     # ==========================================
-    # 5. 緩和完了後の結果保存フェーズ (MPI Reduce)
+    # 5. フレーム保存フェーズ
     # ==========================================
-
-
-    # 自分のコアが担当しているエージェントの情報をリスト化
     my_agents_info = []
-    for a in my_agents:
+    for k in range(len(agent_id)):
         my_agents_info.append({
-            'agent_id': a['id'],
-            'x': a['x'],
-            'y': a['y'],
-            's': a['s'],
-            'phi': a['phi'],
-            'mu': a['mu'],
-
-            'local_density_before_move': a['local_density_before_move'],
-            'local_density_after_move': a['local_density_after_move'],
-            'step_when_decided': a['step_when_decided'],
-            'evacuation_time': a['evacuation_time'],
-            'rank': a['rank'],
-
-            'is_safe': 1 if V_field[int(a['y']), int(a['x'])] == 0 else 0
+            'agent_id': int(agent_id[k]),
+            'x': int(x[k]),
+            'y': int(y[k]),
+            's': int(s[k]),
+            'phi': float(phi[k]),
+            'mu': float(mu[k]),
+            'local_density_before_move': float(local_density_before_move[k]),
+            'local_density_after_move': float(local_density_after_move[k]),
+            'step_when_decided': int(step_when_decided[k]),
+            'evacuation_time': int(evacuation_time[k]),
+            'rank': int(owner_rank[k]),
+            'is_safe': 1 if V_field[int(y[k]), int(x[k])] == 0 else 0
         })
-    # 全コアのエージェント情報をRank 0にかき集める
+
     gathered_agents = comm.gather(my_agents_info, root=0)
 
-    density_contig = np.ascontiguousarray(density)
-    global_density = np.zeros_like(density_contig)
-    
-    # 全コアのdensityを足し合わせてマップ全体を復元
-    comm.Allreduce(density_contig, global_density, op=MPI.SUM)
-    
-    # 意思決定完了率 m_dec (スピン s = 1 の人の割合)
-    my_decided = sum(1 for a in my_agents if a['s'] == 1)
+    # 保存時だけ全体密度を復元
+    density_full_local = np.zeros((GRID_H, GRID_W), dtype=np.int32)
+    density_full_local[my_y_min:my_y_max + 1, :] = density_local[HALO_MOVE:HALO_MOVE + local_h, :]
+
+    global_density = np.zeros_like(density_full_local)
+    comm.Allreduce(density_full_local, global_density, op=MPI.SUM)
+
+    my_decided = int(np.sum(s == 1))
     total_decided = comm.allreduce(my_decided, op=MPI.SUM)
     m_dec = total_decided / N_AGENTS
 
-    # 避難完了率 m_evac (V_field == 0 にいる人の割合)
-    my_safe = sum(1 for a in my_agents if V_field[int(a['y']), int(a['x'])] == 0)
+    my_safe = int(np.sum(V_field[y.astype(np.int32), x.astype(np.int32)] == 0))
     total_safe = comm.allreduce(my_safe, op=MPI.SUM)
     m_evac = total_safe / N_AGENTS
-    
+
     if rank == 0:
-        # リストのリストを平坦化（Flatten）
         all_agents_flat = [agent for sublist in gathered_agents for agent in sublist]
         df_agents = pd.DataFrame(all_agents_flat)
-        
-        # 毎フレーム、エージェント全員の状態をCSVとして保存
+
         agent_csv_path = os.path.join(output_dir, f"agents_frame_{frame:03d}.csv")
         df_agents.to_csv(agent_csv_path, index=False)
-        filename = os.path.join(output_dir, f"density_frame_{frame:03d}.npy")
-        np.save(filename, global_density)
-        history_log.append([current_h_ext, m_dec, m_evac]) 
-        print(f"[Frame {frame:02d}/{NUM_FRAMES-1}] 緩和完了 (h_ext={current_h_ext:.2f}, m_dec={m_dec:.2f}, m_evac={m_evac:.2f}) -> 保存: {filename}")
+
+        density_path = os.path.join(output_dir, f"density_frame_{frame:03d}.npy")
+        np.save(density_path, global_density)
+
+        history_log.append([current_h_ext, m_dec, m_evac, steps_used_this_frame])
+        print(
+            f"[Frame {frame:03d}/{NUM_FRAMES-1}] "
+            f"h_ext={current_h_ext:.3f}, "
+            f"m_dec={m_dec:.4f}, m_evac={m_evac:.4f}, "
+            f"steps={steps_used_this_frame} -> 保存: {density_path}"
+        )
+
 print(f"Time: {time.time() - start}s")
+
 if rank == 0:
-    df_log = pd.DataFrame(history_log, columns=['h_ext', 'm_dec', 'm_evac'])
+    df_log = pd.DataFrame(
+        history_log,
+        columns=['h_ext', 'm_dec', 'm_evac', 'steps_used_this_frame']
+    )
     df_log.to_csv(os.path.join(output_dir, "macro_stats.csv"), index=False)
     print("=== 全計算プロセスが完了しました ===")
