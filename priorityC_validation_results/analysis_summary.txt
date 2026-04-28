@@ -1,0 +1,29 @@
+=== tau_move formula validation ===
+n_valid: 1983
+pearson: 0.15176269317646593
+spearman: 0.3718045554294921
+pearson_log: 0.4916878822327814
+spearman_log: 0.3554029215418172
+corr_V_tau: 0.1564445315821028
+corr_g_tau: -0.04942776423275187
+corr_rho_tau: 1.699099508081832e-05
+
+=== exit/headway/service-rate ===
+n_events: 3966
+mean_headway_steps: 73.73190416141236
+median_headway_steps: 0.0
+std_headway_steps: 304.5903603068515
+
+=== social-trace / avalanche ===
+n_trace_rows: 16640
+n_agents: 128
+peak_frame: 186
+peak_h: 0.93
+peak_A_dec_frame: 89.0
+corr_I_H: 0.6754427740049671
+
+=== detected spinodal-like window from A_dec peak ===
+peak_frame: 186
+peak_h: 0.93
+peak_A_dec_frame: 89.0
+window_frames: [178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194]
