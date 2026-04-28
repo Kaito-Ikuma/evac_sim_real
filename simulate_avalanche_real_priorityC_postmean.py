@@ -53,8 +53,21 @@ R_radius = 2.0
 c_neighbors = 50
 sigma_J = 0.5
 T_dec = 0.01
-NUM_FRAMES = 400
-H_STEP = 0.005
+H_FINE_MIN = 0.80
+H_FINE_MAX = 1.20
+H_FINE_STEP = 0.005
+H_COARSE_LEFT_MIN = 0.00
+H_COARSE_LEFT_MAX = 0.70
+H_COARSE_LEFT_STEP = 0.05
+H_TRANS_LEFT_MIN = 0.70
+H_TRANS_LEFT_MAX = 0.80
+H_TRANS_LEFT_STEP = 0.01
+H_TRANS_RIGHT_MIN = 1.20
+H_TRANS_RIGHT_MAX = 1.30
+H_TRANS_RIGHT_STEP = 0.01
+H_COARSE_RIGHT_MIN = 1.30
+H_COARSE_RIGHT_MAX = 1.50
+H_COARSE_RIGHT_STEP = 0.05
 mu_mean, mu_std = 2.0, 0.1
 phi_mean, phi_std = 1.0, 0.05
 HALO_MOVE = 1
@@ -66,6 +79,31 @@ EVENT_TOL = 5
 SOC_TRACE_MAX_AGENTS = 128
 SOC_TRACE_PRE_WINDOW = 64
 UPSTREAM_MAX_V = 5.0
+
+
+def arange_inclusive(start, stop, step):
+    n = int(np.floor((stop - start) / step + 1e-12))
+    values = start + step * np.arange(n + 1, dtype=np.float64)
+    values = values[values <= stop + 1e-12]
+    return values
+
+
+def build_h_schedule():
+    parts = [
+        arange_inclusive(H_COARSE_LEFT_MIN, H_COARSE_LEFT_MAX, H_COARSE_LEFT_STEP),
+        arange_inclusive(H_TRANS_LEFT_MIN + H_TRANS_LEFT_STEP, H_TRANS_LEFT_MAX, H_TRANS_LEFT_STEP),
+        arange_inclusive(H_FINE_MIN + H_FINE_STEP, H_FINE_MAX, H_FINE_STEP),
+        arange_inclusive(H_TRANS_RIGHT_MIN + H_TRANS_RIGHT_STEP, H_TRANS_RIGHT_MAX, H_TRANS_RIGHT_STEP),
+        arange_inclusive(H_COARSE_RIGHT_MIN + H_COARSE_RIGHT_STEP, H_COARSE_RIGHT_MAX, H_COARSE_RIGHT_STEP),
+    ]
+    h_values = np.concatenate(parts)
+    # 重複や浮動小数誤差を避ける
+    h_values = np.unique(np.round(h_values, 12))
+    return h_values
+
+
+H_VALUES = build_h_schedule()
+NUM_FRAMES = len(H_VALUES)
 
 
 def y_to_local(y_global: int) -> int:
@@ -235,13 +273,13 @@ history_log = []
 if rank == 0:
     os.makedirs(output_dir, exist_ok=True)
     print(f"=== MPI並列計算を開始します（Priority {PRIORITY}） ===")
+    print(f"h-schedule: total {NUM_FRAMES} points, min={H_VALUES.min():.3f}, max={H_VALUES.max():.3f}")
 
 global_step_counter = 0
 prev_total_decided_cum = 0
 prev_total_evacuated_cum = 0
 
-for frame in range(NUM_FRAMES):
-    current_h_ext = frame * H_STEP
+for frame, current_h_ext in enumerate(H_VALUES):
     frame_start_step = global_step_counter
     stable_count = 0
     steps_used_this_frame = MAX_RELAX_STEPS
@@ -543,4 +581,5 @@ for frame in range(NUM_FRAMES):
 print(f"Time: {time.time() - start}s")
 if rank == 0:
     pd.DataFrame(history_log).to_csv(os.path.join(output_dir, "macro_stats.csv"), index=False)
+    pd.DataFrame({'frame': np.arange(NUM_FRAMES, dtype=int), 'h_ext': H_VALUES}).to_csv(os.path.join(output_dir, 'h_schedule.csv'), index=False)
     print("=== 全計算プロセスが完了しました ===")
