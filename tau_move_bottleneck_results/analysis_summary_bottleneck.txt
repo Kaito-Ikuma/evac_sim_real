@@ -1,0 +1,69 @@
+=== tau_move collective bottleneck validation ===
+agent_csv: priorityC_postmean_validation/tau_move_validation_table_postmean.csv
+macro_csv: simulation_results_threshold_10m_c_postmean/macro_stats.csv
+n_valid: 1981
+eps_J: 0.47500000000000003
+smooth_window: 5
+best_a1_frames_per_V_for_arrival_est: 0.025
+
+Columns used:
+  tau_move: tau_move
+  V_at_decision: V_at_decision
+  decision_frame source: decision_frame
+
+Single-variable correlations with tau_move:
+  corr(V_at_decision, tau_move) pearson = 0.181121
+  corr(V_at_decision, tau_move) spearman = 0.397087
+  corr(Q_dec, tau_move) pearson = -0.279408
+  corr(Q_dec, tau_move) spearman = -0.182696
+  corr(rho_up_dec, tau_move) pearson = 0.347107
+  corr(rho_up_dec, tau_move) spearman = 0.314792
+  corr(inv_J_out_dec, tau_move) pearson = 0.364202
+  corr(inv_J_out_dec, tau_move) spearman = 0.272876
+  corr(queue_ratio_dec, tau_move) pearson = 0.420721
+  corr(queue_ratio_dec, tau_move) spearman = 0.314384
+  corr(queue_ratio_arr_est, tau_move) pearson = 0.417057
+  corr(queue_ratio_arr_est, tau_move) spearman = 0.282877
+
+Model summary sorted by adjusted R2:
+  B1_dec_Q_rho_invJ: adj_R2=0.216730, R2=0.218312, pearson=0.467239, spearman=0.461638, pearson_log=0.359021, spearman_log=0.470042
+     features: V_at_decision,Q_dec,rho_up_dec,inv_J_out_dec
+     coefficients: intercept=18158.115566, V_at_decision=182.069771, Q_dec=-18.389362, rho_up_dec=984518.318171, inv_J_out_dec=21749.272921
+  B5_arr_Q_rho_invJ_est: adj_R2=0.213371, R2=0.214960, pearson=0.463638, spearman=0.456899, pearson_log=0.354208, spearman_log=0.465613
+     features: V_at_decision,Q_arr_est,rho_up_arr_est,inv_J_out_arr_est
+     coefficients: intercept=15865.872155, V_at_decision=211.061101, Q_arr_est=-17.842607, rho_up_arr_est=1077649.405290, inv_J_out_arr_est=20484.200404
+  B4_arr_queue_ratio_est: adj_R2=0.210036, R2=0.210834, pearson=0.459166, spearman=0.493152, pearson_log=0.375000, spearman_log=0.493303
+     features: V_at_decision,queue_ratio_arr_est
+     coefficients: intercept=24796.659535, V_at_decision=185.992613, queue_ratio_arr_est=485.175433
+  B3_dec_queue_ratio: adj_R2=0.208607, R2=0.209406, pearson=0.457609, spearman=0.494598, pearson_log=0.367856, spearman_log=0.494708
+     features: V_at_decision,queue_ratio_dec
+     coefficients: intercept=25245.324896, V_at_decision=174.231710, queue_ratio_dec=466.958614
+  B2_dec_Q_invJ: adj_R2=0.167207, R2=0.168469, pearson=0.410450, spearman=0.469494, pearson_log=0.366983, spearman_log=0.468893
+     features: V_at_decision,Q_dec,inv_J_out_dec
+     coefficients: intercept=35260.443296, V_at_decision=178.070466, Q_dec=-9.987531, inv_J_out_dec=37399.551565
+  B0_V_only: adj_R2=0.032316, R2=0.032805, pearson=0.181121, spearman=0.397091, pearson_log=0.319077, spearman_log=0.375628
+     features: V_at_decision
+     coefficients: intercept=35905.248263, V_at_decision=175.314712
+
+Arrival a1 grid best:
+{'a1_frames_per_V': 0.025, 'n': 1981, 'R2': 0.21083361214309537, 'adj_R2': 0.21003566837377596, 'rmse': 32766.15819585653, 'mae': 23339.153665989543, 'pearson': 0.4591662140696937, 'spearman': 0.4931522597765902, 'pearson_log': 0.3749998909471399, 'spearman_log': 0.4933031868676145}
+
+Saved files:
+  - analysis_summary_bottleneck.txt
+  - arrival_a1_grid_search.csv
+  - best_bottleneck_model_comparison.png
+  - bottleneck_components_vs_tau_move.png
+  - pred_B0_V_only_linear.png
+  - pred_B0_V_only_loglog.png
+  - pred_B1_dec_Q_rho_invJ_linear.png
+  - pred_B1_dec_Q_rho_invJ_loglog.png
+  - pred_B2_dec_Q_invJ_linear.png
+  - pred_B2_dec_Q_invJ_loglog.png
+  - pred_B3_dec_queue_ratio_linear.png
+  - pred_B3_dec_queue_ratio_loglog.png
+  - pred_B4_arr_queue_ratio_est_linear.png
+  - pred_B4_arr_queue_ratio_est_loglog.png
+  - pred_B5_arr_Q_rho_invJ_est_linear.png
+  - pred_B5_arr_Q_rho_invJ_est_loglog.png
+  - tau_move_bottleneck_merged_predictions.csv
+  - tau_move_bottleneck_models_summary.csv
