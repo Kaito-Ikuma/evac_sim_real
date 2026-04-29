@@ -1,0 +1,55 @@
+=== tau_move linear decomposition validation ===
+input_csv: priorityC_postmean_validation/tau_move_validation_table_postmean.csv
+n_valid: 1981
+
+Variables used:
+  tau_move column          : tau_move
+  V_at_decision column     : V_at_decision
+  post_no_progress column  : post_no_progress_frames
+  post_stagnated column    : post_stagnated_frames
+  derived column           : lateral_no_progress = no_progress - stagnated (clipped at 0)
+
+Single-variable correlations with observed tau_move:
+  corr(V_at_decision, tau_move)                = 0.181121
+  corr(post_no_progress_frames, tau_move)      = 0.182619
+  corr(post_stagnated_frames, tau_move)        = 0.182599
+  corr(lateral_no_progress, tau_move)          = 0.015584
+  corr(no_progress, stagnated)                 = 0.999995
+
+Model summary:
+  M1_V_only: adjusted_R2=0.032316, R2=0.032805, pearson=0.181121, spearman=0.397091, pearson_log=0.222396, spearman_log=0.397082
+     coefficients: intercept=35905.248263, V_at_decision=175.314712
+  M2_V_plus_no: adjusted_R2=0.032614, R2=0.033591, pearson=0.183279, spearman=0.401362, pearson_log=0.222984, spearman_log=0.401360
+     coefficients: intercept=35896.949891, V_at_decision=63.680430, post_no_progress_frames=37.391169
+  M3_V_plus_stag: adjusted_R2=0.032609, R2=0.033587, pearson=0.183266, spearman=0.401320, pearson_log=0.222957, spearman_log=0.401318
+     coefficients: intercept=35898.440931, V_at_decision=64.028665, post_stagnated_frames=37.280552
+  M4_V_plus_no_plus_stag: adjusted_R2=0.032163, R2=0.033630, pearson=0.183384, spearman=0.400867, pearson_log=0.223373, spearman_log=0.400867
+     coefficients: intercept=35872.412188, V_at_decision=63.661996, post_no_progress_frames=661.618773, post_stagnated_frames=-624.322277
+  M5_V_plus_lateral_plus_stag: adjusted_R2=0.032163, R2=0.033630, pearson=0.183384, spearman=0.400869, pearson_log=0.223373, spearman_log=0.400867
+     coefficients: intercept=35872.412188, V_at_decision=63.661996, lateral_no_progress=661.618773, post_stagnated_frames=37.296495
+
+Best model by adjusted R2:
+  M2_V_plus_no with adjusted_R2=0.032614
+  features: V_at_decision, post_no_progress_frames
+
+Standardized coefficients for M5 (V + lateral_no_progress + stagnated):
+  beta_std_V_at_decision = 0.065770
+  beta_std_lateral_no_progress = 0.006587
+  beta_std_post_stagnated_frames = 0.118373
+
+Saved files:
+  - pred_M1_V_only_linear.png
+  - pred_M1_V_only_loglog.png
+  - pred_M2_V_plus_no_linear.png
+  - pred_M2_V_plus_no_loglog.png
+  - pred_M3_V_plus_stag_linear.png
+  - pred_M3_V_plus_stag_loglog.png
+  - pred_M4_V_plus_no_plus_stag_linear.png
+  - pred_M4_V_plus_no_plus_stag_loglog.png
+  - pred_M5_V_plus_lateral_plus_stag_linear.png
+  - pred_M5_V_plus_lateral_plus_stag_loglog.png
+  - tau_move_linear_components_panel.png
+  - tau_move_linear_decomp_predictions.csv
+  - tau_move_linear_models_summary.csv
+  - tau_move_prediction_comparison.png
+  - tau_move_standardized_coefficients.csv

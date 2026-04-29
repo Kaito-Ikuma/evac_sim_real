@@ -1,0 +1,36 @@
+=== tau_move post-mean formula validation ===
+n_valid: 1981
+a_hat_l2: 638.6039797545187
+a_hat_geom: 1036.8560889150206
+pearson_tau_pred_raw: 0.17950920951750898
+spearman_tau_pred_raw: 0.3940624084738019
+pearson_log_tau_pred_raw: 0.49529952388909154
+spearman_log_tau_pred_raw: 0.3725170523723501
+pearson_tau_pred_fit_l2: 0.179509209517509
+spearman_tau_pred_fit_l2: 0.39406350616855457
+pearson_log_tau_pred_fit_l2: 0.49529952388909154
+spearman_log_tau_pred_fit_l2: 0.3725208472590191
+pearson_tau_pred_fit_geom: 0.17950920951750896
+spearman_tau_pred_fit_geom: 0.3940624084738019
+pearson_log_tau_pred_fit_geom: 0.49529952388909154
+spearman_log_tau_pred_fit_geom: 0.372527798562951
+corr_V_tau: 0.18112091365156574
+corr_post_g_tau: -0.1277260758995139
+corr_post_rho_tau: 0.0379630594069891
+corr_no_progress_tau: 0.1826189078427998
+corr_stagnated_tau: 0.18259853166253354
+
+=== exit/headway/service-rate ===
+n_events: 1981
+mean_headway_steps: 146.10757575757575
+median_headway_steps: 59.5
+std_headway_steps: 427.1043660605871
+
+=== social-trace / avalanche ===
+n_trace_rows: 8320
+n_agents: 128
+peak_frame: 50
+peak_h: 0.93
+peak_A_dec_frame: 98.0
+corr_I_H: 0.6940438228099935
+window_frames: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58]
