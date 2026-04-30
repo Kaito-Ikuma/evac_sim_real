@@ -1,0 +1,90 @@
+=== tau_move actual-arrival collective bottleneck validation ===
+agent_csv: simulation_results_threshold_10m_c_postmean_arrival/agents_frame_118.csv
+macro_csv: simulation_results_threshold_10m_c_postmean_arrival/macro_stats.csv
+exit_events_csv: simulation_results_threshold_10m_c_postmean_arrival/exit_events.csv
+n_valid: 1985
+eps_J: 0.45
+smooth_window: 5
+
+Columns detected:
+  tau_move: tau_move
+  V_at_decision: V_at_decision
+  decision_frame: decision_frame
+  arrival_frame_upstream: arrival_frame_upstream
+  bottleneck_id: bottleneck_id
+  evacuation_frame: evacuation_frame
+
+Single-variable correlations with tau_move:
+  corr(V_dec_model, tau_move) pearson = 0.180306
+  corr(V_dec_model, tau_move) spearman = 0.380527
+  corr(Q_dec, tau_move) pearson = -0.269371
+  corr(Q_dec, tau_move) spearman = -0.157614
+  corr(Q_arr, tau_move) pearson = -0.188780
+  corr(Q_arr, tau_move) spearman = -0.116091
+  corr(rho_up_dec, tau_move) pearson = 0.328384
+  corr(rho_up_dec, tau_move) spearman = 0.278652
+  corr(rho_up_arr, tau_move) pearson = -0.320394
+  corr(rho_up_arr, tau_move) spearman = -0.314105
+  corr(inv_J_dec, tau_move) pearson = 0.403618
+  corr(inv_J_dec, tau_move) spearman = 0.240380
+  corr(inv_J_arr, tau_move) pearson = -0.035187
+  corr(inv_J_arr, tau_move) spearman = -0.069995
+  corr(queue_ratio_dec, tau_move) pearson = 0.439309
+  corr(queue_ratio_dec, tau_move) spearman = 0.282749
+  corr(queue_ratio_arr, tau_move) pearson = -0.167650
+  corr(queue_ratio_arr, tau_move) spearman = -0.308643
+  corr(Q_b_arr, tau_move) pearson = -0.116580
+  corr(Q_b_arr, tau_move) spearman = -0.190656
+  corr(inv_J_b_arr, tau_move) pearson = -0.158328
+  corr(inv_J_b_arr, tau_move) spearman = -0.250981
+  corr(queue_ratio_b_arr, tau_move) pearson = -0.150005
+  corr(queue_ratio_b_arr, tau_move) spearman = -0.226199
+
+Model summary sorted by adjusted R2:
+  A1_dec_Q_rho_invJ: adj_R2=0.228016, R2=0.229572, pearson=0.479137, spearman=0.442895, pearson_log=0.346073, spearman_log=0.448491, rmse=31067.014, mae=21891.842
+     features: V_dec_model,Q_dec,rho_up_dec,inv_J_dec
+     coefficients: intercept=15461.290843, V_dec_model=173.568767, Q_dec=-5.237001, rho_up_dec=749872.601476, inv_J_dec=28767.079084
+  A2_dec_queue_ratio: adj_R2=0.224350, R2=0.225132, pearson=0.474481, spearman=0.475593, pearson_log=0.352146, spearman_log=0.473056, rmse=31156.417, mae=22132.764
+     features: V_dec_model,queue_ratio_dec
+     coefficients: intercept=25289.045659, V_dec_model=166.521736, queue_ratio_dec=407.839818
+  A3_arr_Q_rho_invJ_actual: adj_R2=0.115284, R2=0.117068, pearson=0.342151, spearman=0.389230, pearson_log=0.379936, spearman_log=0.382120, rmse=33258.093, mae=25254.327
+     features: V_dec_model,Q_arr,rho_up_arr,inv_J_arr
+     coefficients: intercept=56003.544401, V_dec_model=111.170518, Q_arr=-5.055816, rho_up_arr=-1036606.443062, inv_J_arr=4635.962191
+  A4_arr_queue_ratio_actual: adj_R2=0.051208, R2=0.052165, pearson=0.228396, spearman=0.431921, pearson_log=0.293805, spearman_log=0.421926, rmse=34458.788, mae=26251.670
+     features: V_dec_model,queue_ratio_arr
+     coefficients: intercept=40453.968974, V_dec_model=146.017222, queue_ratio_arr=-426.686540
+  B2_bottleneck_arr_Q_invJ: adj_R2=0.041523, R2=0.042972, pearson=0.207297, spearman=0.361045, pearson_log=0.288554, spearman_log=0.352761, rmse=34625.491, mae=26090.161
+     features: V_dec_model,Q_b_arr,inv_J_b_arr
+     coefficients: intercept=47150.006775, V_dec_model=106.551136, Q_b_arr=-3673.588326, inv_J_b_arr=-7526.103194
+  B1_bottleneck_arr_queue_ratio: adj_R2=0.038262, R2=0.039232, pearson=0.198070, spearman=0.357203, pearson_log=0.291077, spearman_log=0.349348, rmse=34693.083, mae=26261.480
+     features: V_dec_model,queue_ratio_b_arr
+     coefficients: intercept=38604.125596, V_dec_model=132.326618, queue_ratio_b_arr=-4232.762858
+  B3_bottleneck_dec_queue_ratio: adj_R2=0.032369, R2=0.033346, pearson=0.182610, spearman=0.371961, pearson_log=0.322573, spearman_log=0.360035, rmse=34812.473, mae=26394.306
+     features: V_dec_model,queue_ratio_b_dec
+     coefficients: intercept=35501.079973, V_dec_model=164.483543, queue_ratio_b_dec=-956.606764
+  A0_V_only: adj_R2=0.032022, R2=0.032510, pearson=0.180306, spearman=0.380529, pearson_log=0.316091, spearman_log=0.367306, rmse=34814.230, mae=26398.069
+     features: V_dec_model
+     coefficients: intercept=35049.133809, V_dec_model=167.479301
+
+Saved files:
+  - actual_arrival_bottleneck_components_vs_tau_move.png
+  - analysis_summary_actual_arrival_bottleneck.txt
+  - best_actual_arrival_bottleneck_model_comparison.png
+  - pred_A0_V_only_linear.png
+  - pred_A0_V_only_loglog.png
+  - pred_A1_dec_Q_rho_invJ_linear.png
+  - pred_A1_dec_Q_rho_invJ_loglog.png
+  - pred_A2_dec_queue_ratio_linear.png
+  - pred_A2_dec_queue_ratio_loglog.png
+  - pred_A3_arr_Q_rho_invJ_actual_linear.png
+  - pred_A3_arr_Q_rho_invJ_actual_loglog.png
+  - pred_A4_arr_queue_ratio_actual_linear.png
+  - pred_A4_arr_queue_ratio_actual_loglog.png
+  - pred_B1_bottleneck_arr_queue_ratio_linear.png
+  - pred_B1_bottleneck_arr_queue_ratio_loglog.png
+  - pred_B2_bottleneck_arr_Q_invJ_linear.png
+  - pred_B2_bottleneck_arr_Q_invJ_loglog.png
+  - pred_B3_bottleneck_dec_queue_ratio_linear.png
+  - pred_B3_bottleneck_dec_queue_ratio_loglog.png
+  - tau_move_actual_arrival_bottleneck_merged_predictions.csv
+  - tau_move_actual_arrival_bottleneck_models_summary.csv
