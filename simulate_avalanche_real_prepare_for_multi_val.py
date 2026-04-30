@@ -80,6 +80,18 @@ SOC_TRACE_MAX_AGENTS = 128
 SOC_TRACE_PRE_WINDOW = 64
 UPSTREAM_MAX_V = 5.0
 
+# Adaptive h-scan settings.
+# The coarse scan range is not fixed in advance; it is centered on a
+# mean-field spinodal estimate with a safety margin.
+COARSE_SCAN_STEP = 0.05
+COARSE_SCAN_MIN_H = 0.0
+COARSE_SCAN_SAFETY_WIDTH = 0.35
+COARSE_SCAN_FALLBACK_WIDTH = 0.75
+FINE_SCAN_HALF_WIDTH = 0.12
+FINE_SCAN_POST_WIDTH = 0.35
+FINE_SCAN_STEP = 0.005
+
+
 
 def arange_inclusive(start, stop, step):
     n = int(np.floor((stop - start) / step + 1e-12))
@@ -693,8 +705,72 @@ def estimate_theory_spinodal_logistic():
             'h_center_guess': float(np.nanmax([h_low, h_high])), 'has_mf_spinodal': True}
 
 
-def build_coarse_schedule():
-    return arange_unique_inclusive(0.0, 1.50, 0.05)
+def choose_up_sweep_spinodal_from_theory(theory):
+    """
+    Choose the spinodal expected on the upward h sweep.
+
+    In the logistic mean-field approximation, h_sp_low_p corresponds to
+    the disappearance of the low-decision branch during an increasing-h scan.
+    If it is unavailable, fall back to h_center_guess or phi_mean.
+    """
+    if theory is None:
+        return float(phi_mean), "fallback_phi_mean"
+
+    candidates = []
+    h_low = theory.get('h_sp_low_p', np.nan)
+    h_high = theory.get('h_sp_high_p', np.nan)
+    h_center = theory.get('h_center_guess', np.nan)
+
+    if np.isfinite(h_low):
+        candidates.append((float(h_low), 'h_sp_low_p_up_sweep'))
+    if np.isfinite(h_center):
+        candidates.append((float(h_center), 'h_center_guess'))
+    if np.isfinite(h_high):
+        candidates.append((float(h_high), 'h_sp_high_p'))
+
+    if not candidates:
+        return float(phi_mean), "fallback_phi_mean"
+
+    nonneg = [(h, label) for h, label in candidates if h >= COARSE_SCAN_MIN_H]
+    if nonneg:
+        h, label = max(nonneg, key=lambda z: z[0])
+        return float(h), label
+
+    h, label = max(candidates, key=lambda z: z[0])
+    return float(max(COARSE_SCAN_MIN_H, h)), label + '_clipped_to_min'
+
+
+def build_theory_guided_coarse_schedule(theory):
+    """
+    Build the coarse h schedule from the theoretical spinodal estimate.
+
+    This replaces the previous fixed 0.00--1.50 coarse scan. The scan is
+    centered around the estimated upward-sweep spinodal and padded by a
+    safety width. If the mean-field theory predicts no spinodal, scan around
+    the effective threshold phi_mean with a wider fallback width.
+    """
+    h_pred, source = choose_up_sweep_spinodal_from_theory(theory)
+    has_spinodal = bool(theory.get('has_mf_spinodal', False)) if theory is not None else False
+    half_width = COARSE_SCAN_SAFETY_WIDTH if has_spinodal else COARSE_SCAN_FALLBACK_WIDTH
+
+    h_min = max(COARSE_SCAN_MIN_H, h_pred - half_width)
+    h_max = max(h_min + COARSE_SCAN_STEP, h_pred + half_width)
+
+    schedule = arange_unique_inclusive(h_min, h_max, COARSE_SCAN_STEP)
+    schedule = np.unique(np.round(np.concatenate([schedule, np.array([h_pred])]), 12))
+    schedule = schedule[schedule >= COARSE_SCAN_MIN_H - 1e-12]
+
+    meta = {
+        'h_pred_coarse_center': float(h_pred),
+        'prediction_source': source,
+        'has_mf_spinodal': has_spinodal,
+        'coarse_h_min': float(schedule.min()) if len(schedule) else np.nan,
+        'coarse_h_max': float(schedule.max()) if len(schedule) else np.nan,
+        'coarse_step': COARSE_SCAN_STEP,
+        'coarse_safety_width': float(half_width),
+        'n_coarse_frames': int(len(schedule)),
+    }
+    return schedule, meta
 
 
 def detect_transition_peak(macro_df):
@@ -720,17 +796,19 @@ def detect_transition_peak(macro_df):
 
 
 def build_fine_schedule(h_star):
-    h1 = max(0.0, h_star - 0.12)
-    h2 = h_star + 0.12
-    h3 = h_star + 0.35
+    h1 = max(COARSE_SCAN_MIN_H, h_star - FINE_SCAN_HALF_WIDTH)
+    h2 = h_star + FINE_SCAN_HALF_WIDTH
+    h3 = h_star + FINE_SCAN_POST_WIDTH
     parts = [
-        arange_unique_inclusive(0.0, max(0.0, h1 - 0.03), 0.05),
-        arange_unique_inclusive(max(0.0, h1 - 0.02), h1, 0.02),
-        arange_unique_inclusive(h1 + 0.005, h2, 0.005),
+        # Coarse preconditioning branch. This preserves the upward-sweep
+        # history before entering the fine window.
+        arange_unique_inclusive(COARSE_SCAN_MIN_H, max(COARSE_SCAN_MIN_H, h1 - 0.03), COARSE_SCAN_STEP),
+        arange_unique_inclusive(max(COARSE_SCAN_MIN_H, h1 - 0.02), h1, 0.02),
+        arange_unique_inclusive(h1 + FINE_SCAN_STEP, h2, FINE_SCAN_STEP),
         arange_unique_inclusive(h2 + 0.02, h3, 0.02),
     ]
     vals = np.concatenate([p for p in parts if len(p) > 0])
-    vals = vals[(vals >= 0.0) & (vals <= 1.80)]
+    vals = vals[vals >= COARSE_SCAN_MIN_H - 1e-12]
     return np.unique(np.round(vals, 12))
 
 
@@ -739,11 +817,21 @@ if __name__ == '__main__':
     if rank == 0:
         os.makedirs(ROOT_OUTPUT_DIR, exist_ok=True)
         theory = estimate_theory_spinodal_logistic()
-        pd.DataFrame([theory]).to_csv(os.path.join(ROOT_OUTPUT_DIR, 'theory_prediction_logistic_mf.csv'), index=False)
         print('=== Theory prediction, rough logistic mean-field ===')
         print(theory)
+    else:
+        theory = None
 
-    H_COARSE = build_coarse_schedule()
+    theory = comm.bcast(theory, root=0)
+    H_COARSE, coarse_meta = build_theory_guided_coarse_schedule(theory)
+
+    if rank == 0:
+        pd.DataFrame([theory]).to_csv(os.path.join(ROOT_OUTPUT_DIR, 'theory_prediction_logistic_mf.csv'), index=False)
+        pd.DataFrame([coarse_meta]).to_csv(os.path.join(ROOT_OUTPUT_DIR, 'theory_guided_coarse_scan_config.csv'), index=False)
+        pd.DataFrame({'frame': np.arange(len(H_COARSE), dtype=int), 'h_ext': H_COARSE}).to_csv(os.path.join(ROOT_OUTPUT_DIR, 'theory_guided_coarse_h_schedule.csv'), index=False)
+        print('=== Theory-guided coarse scan config ===')
+        print(coarse_meta)
+
     coarse_df = run_single_sweep(H_COARSE, os.path.join(ROOT_OUTPUT_DIR, 'stage1_coarse'), 'stage1_coarse', seed=42)
 
     if rank == 0:
