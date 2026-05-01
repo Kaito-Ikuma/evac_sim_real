@@ -329,6 +329,8 @@ def write_summary(summary_path: str, tau_stats: dict, exit_stats: dict, social_s
 
 
 def main():
+    
+
     parser = argparse.ArgumentParser(description='Analyze Priority-C outputs: tau_move formula, headway/service rate, and social-field avalanche traces.')
     parser.add_argument('--results_dir', type=str, required=True, help='Directory containing agents_frame_*.csv and macro/exit/social outputs')
     parser.add_argument('--agents_csv', type=str, default=None, help='Optional explicit agents_frame_*.csv path')
@@ -345,10 +347,14 @@ def main():
     exit_csv = args.exit_csv or os.path.join(args.results_dir, 'exit_events.csv')
     trace_csv = args.trace_csv or os.path.join(args.results_dir, 'social_trace_sample.csv')
 
+    
+
     df_agents = pd.read_csv(agents_csv)
     df_macro = pd.read_csv(macro_csv)
     df_exit = pd.read_csv(exit_csv)
     df_trace = pd.read_csv(trace_csv)
+
+    
 
     tau_df = build_tau_move_validation(df_agents, args.cmax)
     tau_stats = plot_tau_move_validation(tau_df, args.output_dir)

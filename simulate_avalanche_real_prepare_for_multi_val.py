@@ -846,21 +846,131 @@ if __name__ == '__main__':
     fine_df = run_single_sweep(H_FINE_ADAPTIVE, os.path.join(ROOT_OUTPUT_DIR, 'stage2_fine'), 'stage2_fine', seed=42)
 
     if rank == 0:
+        def summarize_stage(stage_name, df_stage, h_pred):
+            """
+            Summarize each scan stage.
+
+            Added diagnostics:
+              - delta_h_pred = h_peak_A_dec - h_pred
+              - chi_max_dmdec_dh = max |d m_dec_cum / d h|
+              - h_peak_chi = h where chi is maximal
+              - demand_excess_area_sum_pos_AminusJ = sum max(A_dec_frame - J_out_frame, 0)
+
+            chi_max is evaluated with np.gradient on the actual h schedule, so it
+            also works for non-uniform h spacing.
+            """
+            if df_stage is None or len(df_stage) == 0:
+                return None
+
+            out = {
+                'stage': stage_name,
+                'n_frames': int(len(df_stage)),
+                'h_pred_theory': float(h_pred) if np.isfinite(h_pred) else np.nan,
+                'h_min': float(df_stage['h_ext'].min()),
+                'h_max': float(df_stage['h_ext'].max()),
+            }
+
+            # A_dec peak
+            if 'A_dec_frame' in df_stage.columns and len(df_stage) > 0:
+                idx_A = df_stage['A_dec_frame'].astype(float).idxmax()
+                A_peak = float(df_stage.loc[idx_A, 'A_dec_frame'])
+                h_peak_A = float(df_stage.loc[idx_A, 'h_ext'])
+            else:
+                A_peak = np.nan
+                h_peak_A = np.nan
+
+            # J_out peak
+            if 'J_out_frame' in df_stage.columns and len(df_stage) > 0:
+                idx_J = df_stage['J_out_frame'].astype(float).idxmax()
+                J_peak = float(df_stage.loc[idx_J, 'J_out_frame'])
+                h_peak_J = float(df_stage.loc[idx_J, 'h_ext'])
+            else:
+                J_peak = np.nan
+                h_peak_J = np.nan
+
+            # Q max
+            if 'Q_transport' in df_stage.columns and len(df_stage) > 0:
+                idx_Q = df_stage['Q_transport'].astype(float).idxmax()
+                Q_max = float(df_stage.loc[idx_Q, 'Q_transport'])
+                h_peak_Q = float(df_stage.loc[idx_Q, 'h_ext'])
+            else:
+                Q_max = np.nan
+                h_peak_Q = np.nan
+
+            # Sharpness chi = max |d m_dec_cum / d h|
+            chi_max = np.nan
+            h_peak_chi = np.nan
+            if {'h_ext', 'm_dec_cum'}.issubset(df_stage.columns) and len(df_stage) >= 2:
+                h_arr = df_stage['h_ext'].astype(float).to_numpy()
+                m_arr = df_stage['m_dec_cum'].astype(float).to_numpy()
+                if len(np.unique(h_arr)) >= 2:
+                    chi_arr = np.abs(np.gradient(m_arr, h_arr, edge_order=1))
+                    idx_chi = int(np.nanargmax(chi_arr))
+                    chi_max = float(chi_arr[idx_chi])
+                    h_peak_chi = float(h_arr[idx_chi])
+
+            # Discrete demand excess diagnostic: sum over frames of [A_dec - J_out]_+.
+            demand_excess_area = np.nan
+            if {'A_dec_frame', 'J_out_frame'}.issubset(df_stage.columns):
+                demand_excess_area = float(
+                    np.nansum(
+                        np.maximum(
+                            df_stage['A_dec_frame'].astype(float).to_numpy()
+                            - df_stage['J_out_frame'].astype(float).to_numpy(),
+                            0.0,
+                        )
+                    )
+                )
+
+            Lambda = A_peak / (J_peak + 1e-12) if np.isfinite(A_peak) and np.isfinite(J_peak) else np.nan
+            delta_h_pred = h_peak_A - h_pred if np.isfinite(h_peak_A) and np.isfinite(h_pred) else np.nan
+
+            out.update({
+                'h_peak_A_dec': h_peak_A,
+                'delta_h_pred': delta_h_pred,
+                'A_dec_peak': A_peak,
+                'h_peak_J_out': h_peak_J,
+                'J_out_peak': J_peak,
+                'h_peak_Q': h_peak_Q,
+                'Q_max': Q_max,
+                'Q_max_over_N': Q_max / N_AGENTS if np.isfinite(Q_max) else np.nan,
+                'Lambda_Adec_over_Jout': Lambda,
+                'chi_max_dmdec_dh': chi_max,
+                'h_peak_chi': h_peak_chi,
+                'demand_excess_area_sum_pos_AminusJ': demand_excess_area,
+            })
+            return out
+
+        h_pred_summary = float(coarse_meta.get('h_pred_coarse_center', np.nan))
         rows = []
         for stage_name, df_stage in [('coarse', coarse_df), ('fine', fine_df)]:
-            if df_stage is None or len(df_stage) == 0:
-                continue
-            A_peak = float(df_stage['A_dec_frame'].max()) if 'A_dec_frame' in df_stage else np.nan
-            J_peak = float(df_stage['J_out_frame'].max()) if 'J_out_frame' in df_stage else np.nan
-            Q_max = float(df_stage['Q_transport'].max()) if 'Q_transport' in df_stage else np.nan
-            Lambda = A_peak / (J_peak + 1e-12) if np.isfinite(A_peak) and np.isfinite(J_peak) else np.nan
-            h_peak_A = float(df_stage.loc[df_stage['A_dec_frame'].idxmax(), 'h_ext']) if 'A_dec_frame' in df_stage and len(df_stage) else np.nan
-            rows.append({'stage': stage_name, 'n_frames': len(df_stage),
-                         'h_min': float(df_stage['h_ext'].min()), 'h_max': float(df_stage['h_ext'].max()),
-                         'h_peak_A_dec': h_peak_A, 'A_dec_peak': A_peak, 'J_out_peak': J_peak,
-                         'Lambda_Adec_over_Jout': Lambda, 'Q_max': Q_max,
-                         'Q_max_over_N': Q_max / N_AGENTS if np.isfinite(Q_max) else np.nan})
+            row = summarize_stage(stage_name, df_stage, h_pred_summary)
+            if row is not None:
+                rows.append(row)
+
         summary = pd.DataFrame(rows)
         summary.to_csv(os.path.join(ROOT_OUTPUT_DIR, 'adaptive_scan_summary.csv'), index=False)
+
+        # A compact one-line manifest is useful when collecting many parameter runs.
+        run_manifest = {
+            'run_id': os.path.basename(os.path.abspath(ROOT_OUTPUT_DIR)),
+            'output_dir': os.path.abspath(ROOT_OUTPUT_DIR),
+            'N_AGENTS': N_AGENTS,
+            'C_MAX': C_max,
+            'T_DEC': T_dec,
+            'h_pred_theory': h_pred_summary,
+            'coarse_h_min': coarse_meta.get('coarse_h_min', np.nan),
+            'coarse_h_max': coarse_meta.get('coarse_h_max', np.nan),
+            'coarse_step': coarse_meta.get('coarse_step', np.nan),
+            'coarse_safety_width': coarse_meta.get('coarse_safety_width', np.nan),
+            'h_star_coarse': h_star,
+        }
+        if len(summary) > 0 and 'fine' in set(summary['stage']):
+            fine_row = summary.loc[summary['stage'] == 'fine'].iloc[0].to_dict()
+            for k, v in fine_row.items():
+                if k != 'stage':
+                    run_manifest[f'fine_{k}'] = v
+        pd.DataFrame([run_manifest]).to_csv(os.path.join(ROOT_OUTPUT_DIR, 'run_manifest.csv'), index=False)
+
         print('=== adaptive scan completed ===')
         print(summary)
